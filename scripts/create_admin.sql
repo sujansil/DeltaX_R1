@@ -1,0 +1,2 @@
+-- Development helper. Prefer /api/admin/bootstrap in development.
+-- In production create the admin through a controlled provisioning script.

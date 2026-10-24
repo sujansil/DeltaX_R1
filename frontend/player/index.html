@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Round 1 · Player</title><link rel="stylesheet" href="style.css"></head>
+<body><main><header><div><small>LEADERBOARD PUZZLES</small><h1>Round 1 · Player</h1></div><a href="/admin-ui/">Admin page</a></header>
+<div id="msg" class="notice" role="status" aria-live="polite"></div>
+<section id="login" class="card"><h2>Team login</h2><p>One active login per team. All four relay players use this device.</p>
+<form id="loginForm"><div class="grid"><label>Team username<input id="username" required autocomplete="username"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label></div><div class="row"><button>Log in</button></div></form>
+<details><summary>First-time team activation</summary><p>Use the code and one-time activation token provided by your admin, then log in with your assigned username.</p>
+<form id="activationForm"><div class="grid"><label>Team code<input id="activateCode" required></label><label>Activation token<input id="activateToken" required></label><label>Choose password<input id="activatePassword" type="password" minlength="8" maxlength="128" required autocomplete="new-password"></label></div><div class="row"><button>Create password</button></div></form></details></section>
+<section id="app" hidden><header><b id="team"></b><button id="logout" class="secondary">Log out</button></header><nav aria-label="Rounds"><button data-view="A">1(a) · WizTime</button><button data-view="B">1(b) · Math Rally</button><button data-view="board">Leaderboard</button><button id="refresh" class="secondary">Refresh</button></nav><div id="content" class="card"></div></section>
+</main><script src="app.js"></script></body></html>

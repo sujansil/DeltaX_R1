@@ -1,0 +1,30 @@
+services:
+  postgres-preview:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: round1_preview
+      POSTGRES_USER: round1_preview
+      POSTGRES_PASSWORD: ${PREVIEW_DB_PASSWORD:?preview environment is required}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres_preview_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U round1_preview -d round1_preview"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-preview:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres_preview_data:
+

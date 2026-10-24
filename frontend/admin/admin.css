@@ -1,0 +1,10 @@
+.section-heading { justify-content: space-between; }
+.section-heading h2, .section-heading h3, .section-heading p { margin-top: 0; margin-bottom: 6px; }
+.editor-block { display: grid; gap: 16px; margin: 18px 0; }
+.option-editor { display: grid; grid-template-columns: auto minmax(180px, 1fr) minmax(180px, 1fr); align-items: end; gap: 12px; padding: 14px; margin: 10px 0; background: #f7f9fc; border: 1px solid #dce2ec; border-radius: 8px; }
+.option-editor .correct-choice { display: flex; align-items: center; gap: 8px; padding: 11px 4px; }
+.option-editor input[type="radio"] { width: auto; }
+.team-link { border: 0; background: none; color: #2258bd; padding: 0; text-align: left; font-weight: 700; }
+.team-link:hover { text-decoration: underline; }
+.selected-team { background: #edf3ff; }
+@media (max-width: 700px) { .option-editor { grid-template-columns: 1fr; } .option-editor .correct-choice { padding: 4px; } }
