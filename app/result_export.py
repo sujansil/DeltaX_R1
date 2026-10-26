@@ -1,6 +1,8 @@
 """Consistent, injection-safe Round 1 XLSX result export."""
 from __future__ import annotations
 
+from .question_reveal import snapshot_payload
+
 import io
 import json
 from datetime import datetime
@@ -119,7 +121,7 @@ async def build_results_workbook(db: AsyncSession, scope: str) -> tuple[bytes, d
         "Team Code", "Team Name", "Published Score",
     ])
     for snapshot in publications:
-        for item in json.loads(snapshot.data_json):
+        for item in snapshot_payload(snapshot.data_json)["rows"]:
             _row(published, [snapshot.id, snapshot.published_at, snapshot.round_code,
                  item.get("rank"), item.get("team_id"), item.get("team_code"),
                  item.get("team_name"), item.get("score")], text_columns=(2, 5, 6))

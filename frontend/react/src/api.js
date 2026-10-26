@@ -24,5 +24,5 @@ export async function api(path, {token, method='GET', body, signal, timeout=1200
 }
 export const formatScore=n=>Number(n??0).toLocaleString('en-IN');
 export function formatTime(ms) {const s=Math.ceil(Math.max(0,ms)/1000);return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;}
-export function outcomeKey(s) {const o=s?.own_outcome;return o?.finalized&&o.submission_id?`${s.identity.round_code}:${o.submission_id}`:null;}
+export function outcomeKey(s) {const o=s?.own_outcome;return o?.finalized&&o.score_revealed!==false&&o.points!==null&&o.submission_id?`${s.identity.round_code}:${o.submission_id}`:null;}
 export function revealAllowed(s) {return !!s&&!['ACTIVE','ACTIVE_UNANSWERED','ACTIVE_ACCEPTED','PAUSED'].includes(s.player_state.screen)&&!s.question;}

@@ -900,6 +900,13 @@ async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
     return {"ok": True, "reset_at": now, "affected_records": counts}
 
 
+@router.get("/leaderboard/current")
+async def current_leaderboard(round_code: str = Query("R1A", pattern="^R1[AB]$"),
+                              user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
+    from ..question_reveal import read_leaderboard
+    return await read_leaderboard(db, round_code)
+
+
 @router.get("/audit")
 async def list_audit(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
                      user=Depends(require_admin), db: AsyncSession=Depends(get_db)):

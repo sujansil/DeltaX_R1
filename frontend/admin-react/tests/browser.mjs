@@ -147,6 +147,7 @@ async function routes(page) {
     if (p === "/api/admin/dashboard")
       return send({
         server_now: new Date().toISOString(),
+        environment: "development",
         rounds,
         r1a_progress: { accepted: 3, unanswered: 1, finalized: 4 },
         r1b_teams: {
@@ -288,6 +289,7 @@ async function routes(page) {
           },
         ],
       });
+    if (p === "/api/admin/leaderboard/current") return send({published:false,data:[]});
     if (p === "/api/admin/leaderboard/publish")
       return send({
         published: true,
@@ -490,7 +492,8 @@ try {
   );
   checks++;
   await page.getByRole("button", { name: "Results", exact: true }).click();
-  await page.getByRole("button", { name: "Publish R1A", exact: true }).click();
+  assert.equal(await page.getByRole("button",{name:"Publish R1A",exact:true}).count(),0);checks++;
+  await page.getByRole("button", { name: "Publish R1B", exact: true }).click();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Confirm", exact: true })
@@ -524,6 +527,7 @@ try {
     .waitFor();
   assert.equal(rounds[0].status, "LIVE");
   checks++;
+  await page.getByRole("button",{name:"Reset both rounds",exact:true}).waitFor();checks++;
   await page.getByRole("button", { name: "Questions", exact: true }).click();
   await page.getByRole("button", { name: "View", exact: true }).first().click();
   await page.getByLabel("Question text", { exact: false }).waitFor();

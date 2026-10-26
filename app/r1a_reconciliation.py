@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .models import Round, RoundEnrollment, RoundStatus, ScoreEvent, Submission
 from .round_locking import lock_round
 from .timing import utc_now
+from .question_reveal import ensure_question_snapshot
 
 QUESTION_SECONDS = 30
 QUESTION_COUNT = 23
@@ -40,6 +41,8 @@ async def reconcile_r1a(
     position = round_obj.current_position
     if (round_obj.status != RoundStatus.LIVE.value or not round_obj.question_started_at
             or position is None or not 1 <= position <= QUESTION_COUNT):
+        if round_obj.status in ("ENDED", "PAUSED"):
+            await ensure_question_snapshot(db, round_obj, authoritative_now)
         return ReconciliationResult(position, None)
 
     deadline = round_obj.question_started_at + timedelta(seconds=QUESTION_SECONDS)
@@ -67,6 +70,9 @@ async def reconcile_r1a(
             reason=f"R1A_Q{position}_UNANSWERED", points=0,
             created_at=authoritative_now,
         ))
+
+    # Flush timeout score events before calculating the closed-question board.
+    await ensure_question_snapshot(db, round_obj, authoritative_now)
 
     ended = position == QUESTION_COUNT
     if ended:

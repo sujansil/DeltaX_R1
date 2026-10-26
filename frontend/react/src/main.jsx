@@ -97,6 +97,21 @@ function Waiting({state,left,mutate,busy}) {const screen=state.player_state.scre
  {screen==='ENDED'&&<p className="micro-copy">Moving to R1B? Log out, then sign in again for a new round-scoped session.</p>}
  </section>;
 }
+function QuestionLeaderboard({state}) {
+ const board=state.leaderboard;
+ return <section className="question-leaderboard" aria-label="Question leaderboard">
+  <span className="eyebrow">WIZTIME / QUESTION CLOSED</span>
+  <h1>Leaderboard</h1>
+  <p className="board-intro">{board?.published?`After question ${String(board.after_question).padStart(2,'0')}`:'Finalising the question results…'}</p>
+  {board?.published&&<>
+   <div className="board-table-wrap"><table><thead><tr><th scope="col">Rank</th><th scope="col">Team</th><th scope="col">Score</th></tr></thead><tbody>{board.data.map(row=><tr key={row.team_id} className={row.team_id===state.identity.team_id?'my-team':''}><td>#{row.rank}</td><th scope="row">{row.team_name}{row.team_id===state.identity.team_id&&<small>You</small>}</th><td>{formatScore(row.score)}</td></tr>)}</tbody></table></div>
+   {!board.data.length&&<p className="micro-copy">No enrolled teams in this snapshot.</p>}
+   {board.mine&&!board.data.some(row=>row.team_id===state.identity.team_id)&&<div className="own-standing"><span>Your team · #{board.mine.rank}</span><strong>{formatScore(board.mine.score)} pts</strong></div>}
+   <p className="micro-copy">{board.total_teams>16?'Top 16 shown. ':''}Updated automatically when the question closes.</p>
+  </>}
+  <p className="next-question-note">{state.round.status==='ENDED'?'WizTime is complete. Your recorded results are saved.':'The next question opens when the organiser reveals it.'}</p>
+ </section>;
+}
 function Confirm({title,text,onCancel,onConfirm}){const cancel=useRef(null);useEffect(()=>{cancel.current?.focus();const fn=e=>{if(e.key==='Escape')onCancel();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn)},[]);
  return <div className="modal-backdrop" onClick={onCancel}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Tab'){const b=e.currentTarget.querySelectorAll('button');if(e.shiftKey&&document.activeElement===b[0]){e.preventDefault();b[b.length-1].focus()}else if(!e.shiftKey&&document.activeElement===b[b.length-1]){e.preventDefault();b[0].focus()}}}}><h2>{title}</h2><p>{text}</p><div className="dialog-actions"><button ref={cancel} className="secondary" onClick={onCancel}>Cancel</button><button className="primary" onClick={onConfirm}>Confirm</button></div></section></div>
 }
@@ -127,12 +142,13 @@ function App(){
   }
   // A reveal must never mask a new live question or an actionable handover.
   if(data.question||data.available_actions.includes('READY'))setReveal(null);
+  if(data.leaderboard){const b=data.leaderboard;setStanding({published:b.published,published_at:b.published_at,rank:b.mine?.rank??null,score:b.mine?.score??null});}
   current.current=data;setSnapshot(data);if(restoreRequested.current){setRestoreKey(x=>x+1);restoreRequested.current=false;}setNetwork('online');
  }
  useEffect(()=>{
   if(!token)return;let cancelled=false,pollTimer,heartTimer,polling=false,lastStanding=0;const t=token;
   async function poll(){if(cancelled||polling)return;polling=true;const sent=performance.now();try{const d=await request('/api/player/bootstrap');if(cancelled||t!==aliveToken.current)return;accept(d,sent);
-    if(Date.now()-lastStanding>8000){lastStanding=Date.now();request('/api/leaderboard/mine?round_code='+d.identity.round_code).then(s=>{if(!cancelled)setStanding(s)}).catch(()=>{});}
+
    }catch(e){if(!cancelled&&aliveToken.current){setNetwork('offline');setError(e.message)}}finally{polling=false;if(!cancelled)pollTimer=setTimeout(poll,document.hidden?4000:1400);}}
   let heartbeatBusy=false;
   async function beat(){if(heartbeatBusy||cancelled)return;heartbeatBusy=true;clearTimeout(heartTimer);try{await request('/api/auth/team/heartbeat',{method:'POST',body:{}});if(!cancelled)setNetwork('online')}catch(e){if(!cancelled&&aliveToken.current){setNetwork('offline');setError(e.message)}}finally{heartbeatBusy=false;if(!cancelled)heartTimer=setTimeout(beat,(current.current?.identity.heartbeat_interval_seconds||15)*1000)}}
@@ -155,12 +171,13 @@ function App(){
  if(!token)return <Login onLogin={login} notice={notice} reduced={reduced}/>;
  if(!snapshot)return <main className="connecting"><Brand small/><div className="loading-line"/><h1>Finding your place.</h1><p>{error||'Restoring your team, timer and current turn.'}</p><button className="secondary" onClick={()=>refresh.current()}>Retry connection</button><button className="text-button" onClick={()=>setLogoutConfirm(true)}>Log out</button>{logoutConfirm&&<Confirm title="Log out?" text="Release this session. Your progress stays saved." onCancel={()=>setLogoutConfirm(false)} onConfirm={logout}/>}</main>;
  const identity=snapshot.identity,ps=snapshot.player_state,liveQuestion=!!snapshot.question;
+ const showBoard=identity.round_code==='R1A'&&['BETWEEN_QUESTIONS','ENDED'].includes(ps.screen)&&!!ps.current_question_position;
  return <main className="game-shell"><header className="game-header"><div className="game-brand-row"><Brand small/><div className="session-tools"><span className="slot-tag">{identity.round_code==='R1A'?'TEAM SESSION':`PLAYER ${identity.relay_slot}`}</span><button className="icon-button" aria-label="Log out" onClick={()=>setLogoutConfirm(true)}>↪</button></div></div>
-  <div className="team-strip"><span className="team-name" title={identity.team_name}>{identity.team_name}</span><span className="strip-score">{snapshot.score_total===undefined?'—':formatScore(snapshot.score_total)} <small>pts</small></span><span className="strip-rank" title={standing?.published_at?'Published '+new Date(standing.published_at).toLocaleString():'Not yet published'}>Last published <b>{standing?.rank!=null?'#'+standing.rank:'—'}</b></span></div>
+  <div className="team-strip"><span className="team-name" title={identity.team_name}>{identity.team_name}</span><span className="strip-score">{snapshot.score_total===undefined?'—':formatScore(snapshot.score_total)} <small>pts</small></span><span className="strip-rank" title={standing?.published_at?'Published '+new Date(standing.published_at).toLocaleString():'Not yet published'}>{identity.round_code==='R1A'?'Rank':'Last published'} <b>{standing?.rank!=null?'#'+standing.rank:'—'}</b></span></div>
  </header>
  <div className="connection-row"><span className={'connection-label '+network}><span className="status-dot"/>{network==='online'?'Connected':network==='offline'?'Reconnecting · server clock continues':'Connecting'}</span><button className="text-button tiny" disabled={busy} onClick={()=>{if(snapshot.draft&&!confirm('Restore the server-saved draft? Any unsaved edits in this tab will be discarded.'))return;setError('');restoreRequested.current=true;refresh.current()}}>Refresh</button></div>
  {error&&<div className="notice error" role="alert">{error}<button className="text-button tiny" onClick={()=>setError('')}>Dismiss</button></div>}
- <div className="round-content" key={identity.round_code}>{liveQuestion?<Question key={snapshot.question.id+':'+restoreKey} state={snapshot} left={left} request={request} mutate={mutate} busy={busy} onError={setError}/>:<Waiting state={snapshot} left={left} mutate={mutate} busy={busy}/>}</div>
+ <div className="round-content" key={identity.round_code}>{liveQuestion?<Question key={snapshot.question.id+':'+restoreKey} state={snapshot} left={left} request={request} mutate={mutate} busy={busy} onError={setError}/>:showBoard?<QuestionLeaderboard state={snapshot}/>:<Waiting state={snapshot} left={left} mutate={mutate} busy={busy}/>}</div>
  <footer className="game-footer"><span>ROUND 01 / {identity.round_code==='R1A'?'WIZTIME':'MATH RALLY'}</span><span>{identity.team_code}</span></footer>
  {logoutConfirm&&<Confirm title="Leave this session?" text="Your saved progress stays. Logging out frees your slot for a teammate." onCancel={()=>setLogoutConfirm(false)} onConfirm={logout}/>}
  {reveal&&!liveQuestion&&!snapshot.available_actions.includes('READY')&&<Reveal key={reveal.key} event={reveal} reduced={reduced} onClose={()=>setReveal(null)}/>}

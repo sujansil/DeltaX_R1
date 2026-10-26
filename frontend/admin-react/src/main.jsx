@@ -1834,6 +1834,7 @@ function Submissions() {
   );
 }
 function Results() {
+  const automatic=useData("/api/admin/leaderboard/current?round_code=R1A",{interval:3000});
   const { request, run, confirm } = useApp(),
     [scope, setScope] = useState("BOTH"),
     [publication, setPublication] = useState(null);
@@ -1873,13 +1874,16 @@ function Results() {
   return (
     <>
       <Panel
-        title="Publish leaderboards"
-        description="Publication is separate from current calculated scores. Rankings are determined by the server."
+        title="Leaderboard reveal"
+        description="R1A scores and leaderboard reveal automatically after each 30-second question. The next question still requires the organiser’s reveal."
       >
         <div className="actions">
-          <BusyButton label="Publish R1A" onClick={() => publish("R1A")} />
+          <span className="help">WizTime: automatic · no Publish step</span>
           <BusyButton label="Publish R1B" onClick={() => publish("R1B")} />
         </div>
+      </Panel>
+      <Panel title="Latest automatic WizTime leaderboard">
+        <DataState r={automatic}>{b=>b.published?<><p className="help">After question {b.after_question} · {date(b.published_at)}</p><Table columns={[{key:"rank",label:"Rank"},{key:"team_name",label:"Team"},{key:"score",label:"Score",render:r=>points(r.score)}]} rows={b.data}/></>:<p className="empty">Appears after the first question closes.</p>}</DataState>
       </Panel>
       <Panel
         title="Results export"

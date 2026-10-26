@@ -27,7 +27,7 @@ async function scenario(state,{reducedMotion='no-preference',width=390}={}){
   if(p.endsWith('/logout')){revoked=true;return fulfill({ok:true})}
   if(p.endsWith('/mine'))return fulfill({published:true,rank:12,score:4250,published_at:new Date().toISOString()});
   if(p==='/api/r1b/draft'&&req.method()==='PUT'){const d=req.postDataJSON();state.draft={...d,accepted_at:new Date().toISOString()};return fulfill(state.draft)}
-  if(p.endsWith('/submit')){submitted++;state.own_outcome={accepted:true,finalized:true,submission_id:100,question_position:7,player_number:1,points:750,result:'CORRECT'};state.score_total=5000;state.question=null;state.available_actions=[];state.player_state.screen=state.identity.round_code==='R1A'?'ACTIVE_ACCEPTED':'WAITING_TURN';return fulfill({points:750,result:'CORRECT',position:7})}
+  if(p.endsWith('/submit')){submitted++;state.own_outcome={accepted:true,finalized:true,submission_id:100,question_position:7,player_number:1,points:750,result:'CORRECT'};state.score_total=state.identity.round_code==='R1A'?4250:5000;if(state.identity.round_code==='R1A'){state.own_outcome.points=null;state.own_outcome.result=null;state.own_outcome.score_revealed=false;}state.question=null;state.available_actions=[];state.player_state.screen=state.identity.round_code==='R1A'?'ACTIVE_ACCEPTED':'WAITING_TURN';return fulfill({accepted:true,position:7})}
   return fulfill({ok:true});
  });
  await page.goto(base+'/player/');
@@ -47,10 +47,14 @@ try{
  await page.getByRole('radio',{name:'B: 4% decrease',exact:true}).check();await page.getByRole('button',{name:'Lock answer'}).click();
  await page.getByRole('heading',{name:'Answer locked.'}).waitFor();assert.equal(a.submits(),1);assert.equal(await page.locator('.score-reveal').count(),0);checks++;
  // Full-screen result only after closure, and not again after reload.
- s.player_state.screen='BETWEEN_QUESTIONS';s.timer.running=false;s.timer.remaining_ms=0;
+ assert.match(await page.locator('.strip-score').innerText(),/4,250/);checks++;
+ await page.reload();await page.getByRole('heading',{name:'Answer locked.'}).waitFor();assert.match(await page.locator('.strip-score').innerText(),/4,250/);assert.equal(await page.locator('.score-reveal').count(),0);checks++;
+ s.player_state.screen='BETWEEN_QUESTIONS';s.timer.running=false;s.timer.remaining_ms=0;s.score_total=5000;s.own_outcome.points=750;s.own_outcome.result='CORRECT';s.own_outcome.score_revealed=true;
+ s.leaderboard={published:true,automatic:true,after_question:7,total_teams:1,published_at:new Date().toISOString(),data:[{team_id:1,team_name:'VECTOR FOUR',rank:1,score:5000}],mine:{team_id:1,rank:1,score:5000}};
  await page.getByRole('button',{name:'Refresh',exact:true}).click();await page.locator('.score-reveal').waitFor();
  await page.waitForTimeout(600);if(shots)await page.screenshot({path:shots+'/04-score-reveal.png'});
- await page.getByRole('button',{name:'Continue'}).click();await page.reload();await page.getByRole('heading',{name:'A moment between moves.'}).waitFor();assert.equal(await page.locator('.score-reveal').count(),0);checks++;
+ await page.getByRole('button',{name:'Continue'}).click();await page.getByRole('heading',{name:'Leaderboard',exact:true}).waitFor();if(shots)await page.screenshot({path:shots+'/05-leaderboard.png'});assert.match(await page.locator('.strip-score').innerText(),/5,000/);checks++;await page.reload();await page.getByRole('heading',{name:'Leaderboard',exact:true}).waitFor();assert.equal(await page.locator('.score-reveal').count(),0);checks++;
+ s.player_state.screen='ACTIVE_UNANSWERED';s.player_state.current_question_position=8;s.question={id:8,position:8,text:'The organiser revealed question eight.',options:[{id:8,position:1,text:'A new option'}]};s.own_outcome={accepted:false,finalized:false};s.available_actions=['SUBMIT'];s.timer.running=true;s.timer.remaining_ms=30000;await page.getByRole('button',{name:'Refresh',exact:true}).click();await page.getByRole('heading',{name:'The organiser revealed question eight.'}).waitFor();assert.equal(await page.getByRole('heading',{name:'Leaderboard',exact:true}).count(),0);checks++;
  a.revoke();await page.getByRole('button',{name:'Refresh',exact:true}).click();await page.getByRole('button',{name:'Enter the arena'}).waitFor();assert.match(await page.locator('[role=alert]').innerText(),/expired|revoked/);checks++;assert.deepEqual(a.errors,[]);await a.page.close();
  // Polling never resets typing; autosave payloads match the server contract.
  const r=fixture('R1B');r.question.position=1;r.player_state.current_question_position=1;r.question.text='Find the numerical value of $2^5 + 10$.';r.timer.remaining_ms=28*60000;

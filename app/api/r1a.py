@@ -140,4 +140,5 @@ async def submit(data: SubmitMCQ, user=Depends(require_player), db: AsyncSession
     db.add(ScoreEvent(team_id=user["team_id"], round_code="R1A",
                       submission_id=submission_id, reason=f"R1A_Q{position}_{result}", points=points))
     await db.commit()
-    return {"position": position, "result": result, "points": points, "elapsed_ms": elapsed}
+    # Acceptance is immediate; correctness and score reveal only at question close.
+    return {"position": position, "accepted": True, "result": None, "points": None, "elapsed_ms": elapsed}

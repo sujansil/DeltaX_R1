@@ -21,6 +21,7 @@ from ..r1a_reconciliation import QUESTION_COUNT as R1A_COUNT, reconcile_r1a
 from ..r1b_finalization import effective_remaining_ms, finalize_expired_team
 from ..round_locking import lock_round
 from ..timing import remaining_ms, utc_now
+from ..question_reveal import closed_position, visible_total, read_leaderboard
 
 router = APIRouter(prefix="/api/player", tags=["player-bootstrap"])
 settings = get_settings()
@@ -76,6 +77,7 @@ class QuestionOut(BaseModel):
 class OwnOutcomeOut(BaseModel):
     accepted: bool
     finalized: bool
+    score_revealed: bool = False
     submission_id: int | None = None
     question_position: int | None = None
     player_number: int | None = None
@@ -124,6 +126,7 @@ class BootstrapOut(BaseModel):
     own_outcome: OwnOutcomeOut
     draft: DraftOut | None = None
     score_total: int = 0
+    leaderboard: dict | None = None
     available_actions: list[Literal["START", "READY", "SUBMIT", "SKIP", "SAVE_DRAFT"]]
 
 
@@ -190,7 +193,7 @@ def _outcome(submission: Submission | None) -> OwnOutcomeOut:
         return OwnOutcomeOut(accepted=False, finalized=False)
     return OwnOutcomeOut(
         accepted=submission.submitted_at is not None,
-        finalized=True,
+        finalized=True, score_revealed=True,
         submission_id=submission.id,
         question_position=submission.question_position,
         player_number=submission.player_number,
@@ -289,6 +292,10 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
         if active and not submission and question is None:
             raise coded_error(503, "QUESTION_NOT_CONFIGURED", "The current question is not configured")
         outcome = _outcome(submission)
+        if submission and submission.question_position > closed_position(round_obj, now):
+            outcome.score_revealed = False
+            outcome.result = None
+            outcome.points = None
         actions = ["SUBMIT"] if active and not submission else []
         player_state = PlayerStateOut(screen=screen, current_question_position=position)
         timer = TimerOut(mode="QUESTION", running=active, frozen=paused_active,
@@ -386,16 +393,16 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
                          submission.id if submission else None,
                          draft_out.version if draft_out else None]
 
-    score_total = int(await db.scalar(select(func.coalesce(func.sum(ScoreEvent.points), 0)).where(
-        ScoreEvent.team_id == team.id, ScoreEvent.round_code == device.round_code,
-    )) or 0)
-    version_parts.append(score_total)
+    score_total = await visible_total(db, team.id, device.round_code,
+                                      closed_position(round_obj, now))
+    leaderboard_out = await read_leaderboard(db, device.round_code, team.id)
+    version_parts.extend([score_total, leaderboard_out.get("publication_id")])
     response = BootstrapOut(
         snapshot_version=_snapshot_version(version_parts), snapshot_at=now,
         identity=identity, round=round_out, player_state=player_state,
         timer=timer, question=question, own_outcome=outcome,
         draft=draft_out if device.round_code == "R1B" else None,
-        available_actions=actions, score_total=score_total,
+        available_actions=actions, score_total=score_total, leaderboard=leaderboard_out,
     )
     await db.commit()
     return response
