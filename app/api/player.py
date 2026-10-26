@@ -8,14 +8,14 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
 from ..dependencies import require_player
 from ..models import (PlayerDevice, Question, QuestionOption, R1BDraft, Round,
-                      RoundStatus, Submission, Team, TeamRoundState)
+                      RoundStatus, ScoreEvent, Submission, Team, TeamRoundState)
 from ..player_sessions import authorize_session
 from ..r1a_reconciliation import QUESTION_COUNT as R1A_COUNT, reconcile_r1a
 from ..r1b_finalization import effective_remaining_ms, finalize_expired_team
@@ -123,6 +123,7 @@ class BootstrapOut(BaseModel):
     question: QuestionOut | None = None
     own_outcome: OwnOutcomeOut
     draft: DraftOut | None = None
+    score_total: int = 0
     available_actions: list[Literal["START", "READY", "SUBMIT", "SKIP", "SAVE_DRAFT"]]
 
 
@@ -385,12 +386,16 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
                          submission.id if submission else None,
                          draft_out.version if draft_out else None]
 
+    score_total = int(await db.scalar(select(func.coalesce(func.sum(ScoreEvent.points), 0)).where(
+        ScoreEvent.team_id == team.id, ScoreEvent.round_code == device.round_code,
+    )) or 0)
+    version_parts.append(score_total)
     response = BootstrapOut(
         snapshot_version=_snapshot_version(version_parts), snapshot_at=now,
         identity=identity, round=round_out, player_state=player_state,
         timer=timer, question=question, own_outcome=outcome,
         draft=draft_out if device.round_code == "R1B" else None,
-        available_actions=actions,
+        available_actions=actions, score_total=score_total,
     )
     await db.commit()
     return response

@@ -248,3 +248,24 @@ async def test_bootstrap_rejects_revoked_and_cross_round_sessions_with_codes():
     revoked = await get_bootstrap(tokens[1])
     assert revoked.status_code == 401
     assert revoked.json()["detail"]["code"] == "SESSION_INACTIVE"
+
+
+async def test_bootstrap_score_total_is_authoritative_and_team_round_scoped():
+    require_disposable_test_database()
+    from app.db import SessionLocal
+    from app.models import ScoreEvent, Team
+    token = await seed_r1a("LIVE", age_seconds=1)
+    async with SessionLocal() as db:
+        team = await db.scalar(select(Team).where(Team.code == "BOOT"))
+        other = Team(code="OTHER", name="Other team", login_username="other")
+        db.add(other); await db.flush()
+        db.add_all([
+            ScoreEvent(team_id=team.id, round_code="R1A", reason="TEST", points=1000),
+            ScoreEvent(team_id=team.id, round_code="R1A", reason="TEST", points=-500),
+            ScoreEvent(team_id=team.id, round_code="R1B", reason="TEST", points=4000),
+            ScoreEvent(team_id=other.id, round_code="R1A", reason="TEST", points=9999),
+        ])
+        await db.commit()
+    response = await get_bootstrap(token)
+    assert response.status_code == 200, response.text
+    assert response.json()["score_total"] == 500

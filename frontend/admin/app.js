@@ -202,7 +202,7 @@ async function refreshDashboard() {
       const answer = row.option_id ? "Option " + row.option_position + ": " + (row.option_text || "(image option)") : row.answer || "—";
       const values = [row.team_code + " · " + row.team_name + " (ID " + row.team_id + ")",
         row.position + (row.player_number ? " / Player " + row.player_number : ""), answer,
-        new Date(row.submitted_at).toLocaleString() + " ." + String(new Date(row.submitted_at).getMilliseconds()).padStart(3, "0"),
+        row.submitted_at ? new Date(row.submitted_at).toLocaleString() + " ." + String(new Date(row.submitted_at).getMilliseconds()).padStart(3, "0") : row.timed_out_at ? "Timed out: " + new Date(row.timed_out_at).toLocaleString() : "Not submitted",
         row.elapsed_ms == null ? "—" : (row.elapsed_ms / 1000).toFixed(3) + " s", row.result, row.points];
       values.forEach(value => { const td = document.createElement("td"); td.textContent = value; tr.append(td); });
       if (row.option_image_url) {
