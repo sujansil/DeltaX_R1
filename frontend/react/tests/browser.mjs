@@ -8,7 +8,7 @@ import {chromium} from 'playwright';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const shots=process.env.DX_SCREENSHOTS; if(shots)await mkdir(shots,{recursive:true});
 const types={'.js':'text/javascript','.css':'text/css','.html':'text/html','.woff2':'font/woff2','.woff':'font/woff','.ttf':'font/ttf','.svg':'image/svg+xml'};
-const server=createServer(async(req,res)=>{try{const pathname=decodeURIComponent(new URL(req.url,'http://local').pathname);const file=path.resolve(root,'.'+pathname+(pathname.endsWith('/')?'index.html':''));if(!file.startsWith(root+path.sep))throw Error('path');const body=await readFile(file);res.writeHead(200,{'Content-Type':types[path.extname(file)]||'application/octet-stream'});res.end(body)}catch{res.writeHead(404);res.end('Not found')}});
+const server=createServer(async(req,res)=>{try{const pathname=decodeURIComponent(new URL(req.url,'http://local').pathname).replace(/^\/admin-ui\//,'/admin/');const file=path.resolve(root,'.'+pathname+(pathname.endsWith('/')?'index.html':''));if(!file.startsWith(root+path.sep))throw Error('path');const body=await readFile(file);res.writeHead(200,{'Content-Type':types[path.extname(file)]||'application/octet-stream'});res.end(body)}catch{res.writeHead(404);res.end('Not found')}});
 await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
 const browser=await chromium.launch({headless:true,...(process.env.DX_CHROMIUM?{executablePath:process.env.DX_CHROMIUM,args:['--no-sandbox','--no-zygote','--single-process','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']}: {})});
 let checks=0;
@@ -75,7 +75,7 @@ try{
   else if(p.endsWith('/questions/7'))data={id:7,round_code:'R1A',position:7,question_text:'Sample question',enabled:true,correct_option_id:1,options:[{id:1,position:1,option_text:'Sample option'}]};
   await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)});
  });
- await ap.goto(base+'/admin/');await ap.getByRole('heading',{name:'Relay timing',exact:true}).waitFor();
- await ap.getByRole('button',{name:'Load questions',exact:true}).click();await ap.getByRole('button',{name:/Q7 · Sample/}).click();await ap.getByRole('heading',{name:'Edit R1A question 7'}).waitFor();assert.deepEqual(adminErrors,[]);checks++;await ap.close();
+ await ap.goto(base+'/admin/');await ap.getByRole('heading',{name:'Round controls',exact:true}).waitFor();
+ await ap.getByRole('button',{name:'Questions',exact:true}).click();await ap.getByRole('button',{name:'Edit',exact:true}).click();await ap.getByRole('heading',{name:'Question editor',exact:true}).waitFor();assert.deepEqual(adminErrors,[]);checks++;await ap.close();
  console.log(`${checks} browser scenario checks passed (synthetic API fixtures; no live database).`);
 }finally{await browser.close();await new Promise(r=>server.close(r));}

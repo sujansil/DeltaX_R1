@@ -1,11 +1,12 @@
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+import json
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, literal, select, text
+from sqlalchemy import and_, delete, func, literal, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
@@ -79,6 +80,10 @@ class QuestionUpdate(BaseModel):
 
 class RevokeSessionsIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
+
+class ResetRoundOneIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    confirmation: str
 
 async def acting_admin_id(db, user):
     return await db.scalar(select(Admin.id).where(Admin.username == user.get("sub")))
@@ -356,7 +361,7 @@ async def dashboard(r1b_offset: int = Query(0, ge=0), r1b_limit: int = Query(100
     r1b_round = by_code.get("R1B")
     reference = (r1b_round.paused_at if r1b_round and r1b_round.status == "PAUSED"
                  and r1b_round.paused_at else now)
-    return {"server_now": now, "presence_semantics":
+    return {"server_now": now, "environment": settings.environment, "presence_semantics":
             "Session presence is a server lease and does not prove a browser is physically open or closed",
             "r1a_progress": r1a_progress, "rounds": [
         {"code": r.code, "status": r.status, "position": r.current_position,
@@ -825,6 +830,74 @@ async def seed_rounds(user=Depends(require_admin), db: AsyncSession=Depends(get_
     await audit(db, user, "SEED_ROUNDS", f"created={','.join(created)}")
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/rounds/reset")
+async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
+                          db: AsyncSession=Depends(get_db)):
+    """Reset both Round 1 competitions in one serialized transaction."""
+    if settings.environment != "development":
+        raise HTTPException(404, "Development reset is disabled")
+    reason = data.reason.strip()
+    if not reason:
+        raise admin_error(422, "RESET_REASON_REQUIRED", "An audited reset reason is required")
+    if data.confirmation != "RESET ROUND 1":
+        raise admin_error(422, "RESET_CONFIRMATION_INVALID",
+                          "Type RESET ROUND 1 exactly to confirm")
+
+    # Global mutation order is R1A Round -> R1B Round -> dependent state.
+    # These exclusive locks wait for player mutations and both reconcilers, and
+    # stop new ones from observing a partially reset competition.
+    rounds = (await db.scalars(select(Round).where(
+        Round.code.in_(("R1A", "R1B"))
+    ).order_by(Round.code).with_for_update())).all()
+    by_code = {round_obj.code: round_obj for round_obj in rounds}
+    if set(by_code) != {"R1A", "R1B"}:
+        raise admin_error(409, "ROUND_RECORDS_MISSING",
+                          "Initialize both round records before resetting")
+    live = [code for code in ("R1A", "R1B")
+            if by_code[code].status == RoundStatus.LIVE.value]
+    if live:
+        raise admin_error(409, "ROUND_LIVE",
+                          f"Pause or end the live rounds first: {', '.join(live)}")
+
+    now = utc_now()
+    admin_id = await acting_admin_id(db, user)
+    session_result = await db.execute(update(PlayerDevice).where(
+        PlayerDevice.active.is_(True)
+    ).values(active=False, revoked_at=now, revoked_by_admin_id=admin_id,
+             revocation_reason="Round 1 development reset"))
+    counts = {"player_sessions_revoked": session_result.rowcount}
+    for key, model in (
+        ("score_events", ScoreEvent),
+        ("submissions", Submission),
+        ("numerical_drafts", R1BDraft),
+        ("relay_team_states", TeamRoundState),
+        ("enrolments", RoundEnrollment),
+        ("leaderboard_snapshots", LeaderboardSnapshot),
+    ):
+        result = await db.execute(delete(model))
+        counts[key] = result.rowcount
+
+    for round_obj in rounds:
+        round_obj.status = RoundStatus.DRAFT.value
+        round_obj.started_at = None
+        round_obj.ended_at = None
+        round_obj.leaderboard_published_at = None
+        round_obj.current_position = None
+        round_obj.question_started_at = None
+        round_obj.paused_at = None
+
+    details = json.dumps({
+        "reason": reason,
+        "reset_at": now.isoformat(),
+        "rounds": ["R1A", "R1B"],
+        "affected_records": counts,
+    }, sort_keys=True, separators=(",", ":"))
+    db.add(AdminAction(admin_id=admin_id, action="RESET_ROUND_ONE", details=details,
+                       created_at=now))
+    await db.commit()
+    return {"ok": True, "reset_at": now, "affected_records": counts}
 
 
 @router.get("/audit")

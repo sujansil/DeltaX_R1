@@ -145,6 +145,28 @@ async def team_set_password(data: TeamCreatePasswordIn, db: AsyncSession = Depen
     return {"ok": True}
 
 
+class AdminSetupIn(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/admin/setup")
+async def admin_setup(data: AdminSetupIn, db: AsyncSession = Depends(get_db)):
+    """Development provisioning with JSON credentials; never a password reset."""
+    if settings.environment != "development":
+        raise HTTPException(404, "Development admin setup is disabled")
+    username = data.username.strip()
+    if not username:
+        raise HTTPException(422, "Admin username cannot be blank")
+    existing = await db.scalar(select(Admin.id).where(Admin.username == username))
+    if existing is not None:
+        raise HTTPException(409, "Admin already exists; its password was not changed")
+    hashed = await hash_password_async(data.password)
+    db.add(Admin(username=username, password_hash=hashed))
+    await db.commit()
+    return {"created": True, "username": username}
+
+
 @router.post("/admin/login")
 async def admin_login(data: LoginIn, db: AsyncSession = Depends(get_db)):
     admin = (await db.execute(select(Admin).where(
