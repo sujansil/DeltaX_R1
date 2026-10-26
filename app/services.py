@@ -56,7 +56,7 @@ class LeaderboardService:
         snap = LeaderboardSnapshot(round_code=round_code, data_json=json.dumps(data))
         db.add(snap)
         await db.flush()
-        return data
+        return snap, data
 
 async def get_round(db, code: str) -> Round:
     result = await db.execute(select(Round).where(Round.code == code))

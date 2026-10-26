@@ -120,6 +120,135 @@ Timeout/unanswered: 0
 
 The client countdown is display-only.
 
+## Round 1(a) timeout reconciliation
+
+Starting R1A atomically snapshots all enabled teams into `round_enrollments`.
+That snapshot—not active player sessions—is the stable eligibility roster for all
+23 questions. Later team/session state does not add or remove eligibility.
+
+Every revealed question retains its manual 30-second window. A server reconciler
+uses the persisted `question_started_at`, takes the R1A row lock, and records one
+zero-point `UNANSWERED` outcome for each eligible team without an accepted answer.
+It never reveals the next question. Q23 reconciliation changes the round to
+`ENDED` and sets `ended_at` to the effective deadline. `submitted_at` is null for
+timeouts; `timed_out_at` is the deadline and `recorded_at` is processing time.
+
+The reconciler starts with the FastAPI lifespan and stops cleanly during lifespan
+shutdown. It runs immediately and then every
+`R1A_RECONCILIATION_INTERVAL_SECONDS` (default 1 second). Each pass is one short
+transaction. PostgreSQL locking and uniqueness make multiple app workers safe;
+errors are logged and the loop retries. Request, submission, reveal, pause, and
+manual-end paths reuse the same reconciliation operation where relevant.
+
+Manual early round end keeps its existing policy: it does not synthesize timeout
+scores before the current question's actual deadline. No separate scoring rule
+for an early admin end is defined.
+
+## Player refresh/bootstrap contract
+
+`GET /api/player/bootstrap` is the versioned, typed reconstruction endpoint for a
+fresh player client. It needs only the bearer token and returns identity/session
+scope, round and turn lifecycle, authoritative timer state, the caller's own
+outcome, permitted question/draft data, and currently allowed actions. Unlike the
+older split state/question calls, it also returns useful `ENDED`, `FINISHED`, and
+`EXPIRED` screens.
+
+Example ACTIVE R1B shape (fields with null values are retained):
+
+```json
+{
+  "contract_version": "1",
+  "snapshot_version": "b6c98c390b8f65071f5dc7a1",
+  "snapshot_at": "2026-10-26T12:00:00Z",
+  "identity": {"team_id": 7, "team_code": "T07", "team_name": "Team 7",
+    "session_id": "...", "round_code": "R1B", "relay_slot": 2,
+    "lease_expires_at": "2026-10-26T12:01:00Z", "token_expires_at": 1793016000,
+    "heartbeat_interval_seconds": 15},
+  "round": {"code": "R1B", "status": "LIVE", "started_at": "...",
+    "paused_at": null, "ended_at": null},
+  "player_state": {"screen": "ACTIVE", "current_player": 2,
+    "current_question_position": 2, "turn_status": "ACTIVE"},
+  "timer": {"mode": "CONTINUOUS", "running": true, "frozen": false,
+    "remaining_ms": 912345, "deadline": "..."},
+  "question": {"id": 25, "position": 2, "text": "...", "image_url": null,
+    "options": null},
+  "own_outcome": {"accepted": false, "finalized": false,
+    "submission_id": null, "question_position": null},
+  "draft": {"turn_id": "...", "version": 4, "answer": "12.",
+    "accepted_at": "..."},
+  "available_actions": ["SUBMIT", "SKIP", "SAVE_DRAFT"]
+}
+```
+
+The response is assembled under one PostgreSQL `REPEATABLE READ`, read-only MVCC
+snapshot. Ordinary polls take no write locks. If the caller's persisted deadline
+is already due, the endpoint first invokes the same transactional reconciler used
+by mutations/background workers, then reads a fresh snapshot. `snapshot_at` lets
+clients discard an older overlapping response; `snapshot_version` changes when
+the relevant persisted competition state changes. Draft writes must additionally
+use their monotonic draft `version`. Clients should still use request sequence
+ordering when two requests share the same snapshot timestamp/version.
+
+Questions are returned only for an authorized actionable turn. R1A options never
+include the correct-option marker; R1B never exposes answer keys or tolerances.
+Inactive relay slots receive `WAITING_TURN` without another slot's question or
+draft. `own_outcome` is limited to the caller's team and, for R1B, relay slot.
+
+Affected authentication errors use readable structured details:
+
+```json
+{"detail": {"code": "SESSION_INACTIVE", "message": "Session expired or revoked; log in again"}}
+```
+
+Stable codes include `TOKEN_INVALID`, `SESSION_INVALID`, `SESSION_INACTIVE`,
+`SESSION_SCOPE_MISMATCH`, `ROUND_SCOPE_MISMATCH`, `ROUND_NOT_CONFIGURED`, and
+`QUESTION_NOT_CONFIGURED`. Existing split endpoints remain available, and the
+player harness accepts both legacy string details and structured details.
+
+## Player sessions
+
+Player authorization is a persisted server-side lease, not a device fingerprint.
+JWTs carry an immutable session ID plus the server-assigned round and relay slot;
+the database row is checked again on every protected request. The access-token
+expiry is only an upper bound. The shorter lease defaults to 60 seconds and the
+browser heartbeats every 15 seconds (`PLAYER_SESSION_LEASE_SECONDS` and
+`PLAYER_HEARTBEAT_SECONDS`). Expired or revoked rows are never revived: login
+marks expired rows inactive while holding the round and team locks, then inserts
+a new session ID.
+
+The server derives login scope from round state. A live/paused R1B takes priority;
+otherwise R1A owns login until it ends, then draft/live R1B does. Existing R1A
+sessions do not become R1B sessions at transition and do not consume R1B slots;
+players log in again for a new server-assigned scope. R1A permits one slot and
+R1B permits four distinct slots, but R1B can start with only slot 1 connected.
+Logout or admin revocation changes only session rows and never resets relay state,
+player assignment, scores, submissions, or clocks.
+
+Competition mutations and session revocation lock in this order: Round, Team
+(when needed for allocation/revocation), PlayerDevice, TeamRoundState, then
+submission/score rows. Thus an in-flight submission that owns the shared round
+lock commits before a queued revocation; if revocation owns the exclusive round
+lock first, the later mutation rechecks the session and fails before writing.
+
+The player page sends a keepalive unload hint which shortens the lease to 10
+seconds. A refresh/reconnect heartbeat restores the ordinary lease. Browser Back,
+tab hiding, background throttling, sleep, and network loss do not explicitly log
+out; without successful heartbeats the lease eventually expires. Browsers do not
+guarantee unload delivery, so immediate close detection is not claimed. A copied
+token in a duplicated tab represents the same session/slot—there is deliberately
+no claim of physical-device identity. Tokens and passwords are sent in request
+headers/bodies, never URLs or application logs.
+
+Migration `0006_round_sessions` preserves credentials and competition tables. It
+keeps old session rows, infers their round from server state, caps their first
+post-migration lease at 60 seconds, and accepts their legacy JWT claims by looking
+up the persisted session. It drops only the old one-row-per-team constraint and
+adds round/slot checks plus an active-slot partial unique index. Apply normally:
+
+```bash
+.venv/bin/alembic upgrade head
+```
+
 ## Round 1(b)
 
 `POST /api/r1b/start` prepares a team's relay after the admin opens R1B but consumes no
@@ -134,6 +263,53 @@ At the 28-minute deadline, the backend closes the team. The browser attempts sub
 before the displayed deadline, but late answers are never accepted.
 
 Numerical answers use configurable absolute/relative tolerance per question.
+
+### Draft autosave and timeout finalization
+
+An ACTIVE turn has a server-generated `turn_id`. The owning relay slot reads its
+current draft with `GET /api/r1b/draft` and saves with `PUT /api/r1b/draft` using:
+
+```json
+{"turn_id": "server turn UUID", "version": 1, "answer": "42"}
+```
+
+Versions must increase for that turn. A lower/equal version or an old `turn_id`
+is rejected, so delayed requests cannot overwrite a newer edit or affect the next
+player. `answer` may be an empty string, which explicitly clears an older value.
+The response returns the accepted server timestamp and version. Reads return the
+same metadata for refresh recovery. Only the authenticated active slot can read
+or write; paused, ended, expired, submitted, skipped, and stale turns reject
+writes. Client timestamps are not accepted.
+
+The player page waits 500 ms after typing, with a two-second maximum delay between
+attempts while typing continuously. Saves are serialized and show unsaved,
+saving, or saved state. Manual submit sends the current input directly and does
+not depend on a pending autosave. Text that never reaches the server cannot be
+restored and is not guaranteed to count at timeout.
+
+At ACTIVE budget expiry, the latest server-accepted draft at or before the
+effective deadline is finalized. Trimmed-empty text is `UNANSWERED` for zero;
+non-empty text is passed to the existing numeric scorer, so incomplete/non-finite
+or otherwise invalid numeric text is `WRONG` for -1500. A newer empty or invalid
+edit never falls back to an older valid value. The outcome separately records
+the effective timeout, processing time, finalization source, and draft ID/version.
+
+CONTINUOUS expiry while waiting for the next player's READY ends the relay without
+creating another outcome: the previous submission already scored and the next
+question was never revealed. PAUSE_DURING_HANDOVER has no running clock while
+waiting. Global pause prevents reconciliation and resume shifts persisted clock
+anchors/deadlines under the existing lock.
+
+The shared FastAPI lifespan reconciler processes overdue R1B team states in
+bounded batches of 100 using `FOR UPDATE SKIP LOCKED`; multiple workers are safe.
+It starts and stops with the application, logs each failed pass, and retries from
+persisted timestamps after restart. Migration `0008_r1b_drafts_timeout` preserves
+old outcomes and gives any already-ACTIVE R1B turn a deterministic turn identity;
+historical `EXPIRED` states and scores are not reinterpreted.
+
+Manual admin end remains a separate existing policy: it does not finalize an
+ACTIVE draft before the persisted budget deadline. No early-end scoring rule is
+defined by this patch.
 
 Before R1B starts, an authenticated admin reads or changes its mode with
 `GET /api/admin/r1b/timer` and `PUT /api/admin/r1b/timer`. The mode is locked once the round
@@ -160,6 +336,113 @@ submission or READY acceptable.
 
 Scores can change internally without changing the public board. Admin explicitly publishes a snapshot. The public endpoint returns the last published snapshot until another publication occurs.
 
+## Essential administration API
+
+All endpoints below require an admin bearer token. Before start, validate with
+`GET /api/admin/rounds/R1A/validate` or `.../R1B/validate`. The response is
+actionable and is produced by the same validator used inside the locked start
+transaction:
+
+```json
+{"round_code":"R1B","valid":false,"issues":[
+  {"code":"QUESTION_POSITIONS","field":"questions","message":"R1B needs exactly enabled questions 1 through 4"}
+]}
+```
+
+Question management supports paginated `GET /api/admin/questions`, detail,
+`POST`, `PUT`, and `DELETE`, plus equivalent option detail/list/update/delete
+paths. Existing question/option image upload paths remain supported. Content and
+image mutations take the round lock and are rejected once that round starts, so
+live or historical submission references cannot be rewritten. Numerical answer
+keys and tolerances must be finite; tolerances must also be nonnegative. An R1A
+correct option must belong to its own question.
+
+Team management supports paginated list, detail, and `PUT /api/admin/teams/{id}`
+for code, name, username, and enabled state. Enable/disable is frozen once any
+competition round has started; edits never add/remove enrolment rows or rewrite
+results. `POST /api/admin/teams/{id}/password-reset` accepts `new_password`,
+replaces the hash, clears unused activation material, revokes all current leases,
+and preserves round progress. It returns only the revoked-session count—not a
+hash, token, old password, or activation secret. Existing session listing and
+revocation endpoints remain unchanged.
+
+`GET /api/admin/dashboard?r1b_offset=0&r1b_limit=100` adds R1A answer progress and
+a paginated, set-based R1B team view containing turn/budget/finalization and
+lease-presence information. Presence is explicitly a server lease and is not
+proof that a physical browser is open or closed.
+
+Manual End is permanent. Under the exclusive round lock it first reconciles only
+deadlines already effective. R1B unfinished clocks are then frozen without
+scoring an early draft or creating an unanswered result. Accepted outcomes remain
+unchanged, and READY/resume/retry cannot reopen the ended round.
+
+Leaderboard publication validates the round, serializes through its round lock,
+and creates a new immutable snapshot. The response includes `publication_id`,
+`published_at`, and `scope: {round_code, immutable}`. Repeated publication never
+updates an older snapshot.
+
+`GET /api/admin/audit?offset=0&limit=100` returns the acting admin, action, target
+details, and timestamp. Round controls, publication, question/option changes,
+team changes, password reset, uploads, and session revocation are audited. Audit
+details never contain passwords, JWTs, activation tokens, or answer drafts.
+
+This administration patch needs no additional migration beyond the current
+schema head. Apply the existing migration chain normally with
+`.venv/bin/alembic upgrade head`.
+
 ## Images
 
 Question/option image fields are URL/path references. The included local storage service saves PNG/JPG uploads under `MEDIA_ROOT`. Replace it with S3/R2/etc. by implementing the same service interface.
+
+## Results export
+
+An admin bearer token can download a real Excel workbook from
+`GET /api/admin/exports/results.xlsx?scope=R1A`, `R1B`, or `BOTH`. The admin
+page exposes the same download. The workbook records UTC export time, scope,
+application version and Alembic revision. Current score-event totals and
+immutable published leaderboard snapshots are deliberately separate. Its
+outcome rows retain finalization/timing provenance, but omit drafts, secrets,
+correct answers and tolerances. User-controlled text is stored as literal XLSX
+text, including values beginning with `=`, `+`, `-`, or `@`.
+
+The endpoint uses one PostgreSQL `REPEATABLE READ`, read-only transaction, so
+all sheets describe the same database snapshot. A later export may naturally
+contain newer activity.
+
+## Backup and isolated restore rehearsal
+
+Install PostgreSQL 16 client tools, or have Docker available for the automatic
+`postgres:16-alpine` client fallback. Create a private backup with:
+
+```bash
+./scripts/backup_round1.sh /secure/backup/location
+```
+
+Each mode-0700 artifact directory contains a custom-format PostgreSQL dump, a
+local-media tar, and a manifest with SHA-256 checksums, schema revision,
+application version, representative database counts, and per-media-file
+checksums. An `INCOMPLETE` marker remains after any interrupted/failed run.
+Credentials are passed through a temporary mode-0600 pgpass file and are not
+placed in the archive or command output. Existing backups and database volumes
+are never deleted.
+
+PostgreSQL dumps are internally consistent, but the database and media archive
+are separate captures. Pause content and upload changes while backup runs to
+obtain a coordinated recovery checkpoint.
+
+Rehearse into a new, explicitly disposable database and a nonexistent media
+directory (never the normal database/media path):
+
+```bash
+./scripts/restore_rehearsal.sh /secure/backup/location/round1-TIMESTAMP \
+  'postgresql://USER:PASSWORD@127.0.0.1:5432/round1_restore_rehearsal' \
+  /tmp/round1-restored-media
+```
+
+The script refuses an existing media target, refuses database names without a
+disposable marker, and relies on `createdb` to refuse an existing database. It
+verifies archive checksums before restore, then schema revision, representative
+team/submission/score/publication totals, and restored media checksums. It
+leaves the rehearsal database and media in place for inspection; cleanup is an
+explicit operator action. This is a logical backup, not encrypted storage,
+point-in-time recovery, or a substitute for protected off-site retention.

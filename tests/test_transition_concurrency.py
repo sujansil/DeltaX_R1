@@ -362,7 +362,8 @@ async def test_r1b_deadline_is_checked_after_lock_wait(action):
     async with SessionLocal() as check:
         state = await check.scalar(select(TeamRoundState).where(TeamRoundState.team_id == team_id))
         assert state.turn_status == "EXPIRED"
-    assert await counts("R1B") == (0, 0)
+    # ACTIVE expiry now durably finalizes the latest server draft (empty here).
+    assert await counts("R1B") == ((1, 1) if action == "submit" else (0, 0))
 
 
 async def test_resume_is_ordered_with_player_actions(monkeypatch):

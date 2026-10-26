@@ -12,6 +12,8 @@ from ..models import Question, QuestionOption, Round, RoundStatus, ScoreEvent, S
 from ..scoring import r1a_result
 from ..timing import elapsed_ms, remaining_ms, utc_now
 from ..round_locking import lock_round
+from ..player_sessions import authorize_session
+from ..r1a_reconciliation import reconcile_r1a
 
 router = APIRouter(prefix="/api/r1a", tags=["round-1a"])
 QUESTION_SECONDS = 30
@@ -31,21 +33,26 @@ def position_at(round_obj: Round, now):
     return position if 1 <= position <= QUESTION_COUNT else None
 
 
-async def live_context(db: AsyncSession, *, locked: bool = False):
+async def live_context(db: AsyncSession, *, locked: bool = False, reconcile: bool = False):
     if locked:
-        round_obj = await lock_round(db, "R1A", exclusive=False)
+        round_obj = await lock_round(db, "R1A", exclusive=reconcile)
     else:
         round_obj = (await db.execute(select(Round).where(Round.code == "R1A"))).scalar_one_or_none()
     if not round_obj:
         raise HTTPException(409, "Round 1(a) has not been configured")
     now = utc_now()
+    if reconcile:
+        await reconcile_r1a(db, now=now, locked_round=round_obj)
     position = position_at(round_obj, now)
     return round_obj, now, position
 
 
 @router.get("/state")
 async def state(user=Depends(require_player), db: AsyncSession = Depends(get_db)):
-    round_obj, now, position = await live_context(db)
+    round_obj, now, position = await live_context(db, locked=True, reconcile=True)
+    if user.get("sid"):
+        await authorize_session(db, user, "R1A")
+    await db.commit()
     effective_status = round_obj.status
     if round_obj.status == RoundStatus.LIVE.value and position is None:
         effective_status = "ENDED" if round_obj.current_position == QUESTION_COUNT else "WAITING"
@@ -63,8 +70,11 @@ async def state(user=Depends(require_player), db: AsyncSession = Depends(get_db)
 
 @router.get("/question")
 async def question(user=Depends(require_player), db: AsyncSession = Depends(get_db)):
-    round_obj, now, position = await live_context(db)
+    round_obj, now, position = await live_context(db, locked=True, reconcile=True)
+    if user.get("sid"):
+        await authorize_session(db, user, "R1A")
     if position is None:
+        await db.commit()
         raise HTTPException(409, "Round 1(a) is not live or has finished")
     q = (await db.execute(select(Question).where(
         Question.round_code == "R1A", Question.position == position, Question.enabled.is_(True)
@@ -75,6 +85,7 @@ async def question(user=Depends(require_player), db: AsyncSession = Depends(get_
         QuestionOption.question_id == q.id
     ).order_by(QuestionOption.position))).scalars().all()
     deadline = round_obj.question_started_at + timedelta(seconds=QUESTION_SECONDS)
+    await db.commit()
     return {
         "position": position,
         "question": {
@@ -90,9 +101,12 @@ async def question(user=Depends(require_player), db: AsyncSession = Depends(get_
 
 @router.post("/submit")
 async def submit(data: SubmitMCQ, user=Depends(require_player), db: AsyncSession = Depends(get_db)):
-    # The shared round lock coordinates this entire write with pause/end/reveal.
-    round_obj, now, position = await live_context(db, locked=True)
+    # The exclusive lock lets this request reconcile the deadline before writing.
+    round_obj, now, position = await live_context(db, locked=True, reconcile=True)
+    if user.get("sid"):
+        await authorize_session(db, user, "R1A", lock=True)
     if position is None:
+        await db.commit()
         raise HTTPException(409, "Round 1(a) is not live or has finished")
     q = (await db.execute(select(Question).where(
         Question.round_code == "R1A", Question.position == position, Question.enabled.is_(True)
@@ -115,7 +129,7 @@ async def submit(data: SubmitMCQ, user=Depends(require_player), db: AsyncSession
     statement = insert(Submission).values(
         team_id=user["team_id"], round_code="R1A", question_position=position,
         player_number=None, selected_option_id=data.option_id, submitted_at=now,
-        elapsed_ms=elapsed, result=result, points=points,
+        elapsed_ms=elapsed, result=result, points=points, recorded_at=now,
     ).on_conflict_do_nothing(
         constraint="uq_team_round_question"
     ).returning(Submission.id)

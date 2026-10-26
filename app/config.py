@@ -8,12 +8,14 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str = "redis://localhost:6379/0"
     auth_mode: str = "ADMIN_ASSIGNED"
-    r1b_device_mode: str = "FOUR_PLAYER_DEVICES"
     media_root: str = "./media"
     media_public_prefix: str = "/media"
     access_token_minutes: int = 720
+    player_session_lease_seconds: int = 60
+    player_heartbeat_seconds: int = 15
     activation_token_hours: int = 72
     max_upload_bytes: int = 5 * 1024 * 1024
+    r1a_reconciliation_interval_seconds: float = 1.0
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 

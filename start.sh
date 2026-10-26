@@ -298,6 +298,17 @@ stop_preview() {
   printf 'Preview stopped. Its PostgreSQL volume and all preview data were preserved.\n'
 }
 
+create_backup() {
+  [[ -x "${PROJECT_DIR}/.venv/bin/python" ]] || { printf 'Create .venv and install requirements first.\n' >&2; return 1; }
+  printf 'Pause question/team/media changes for a coordinated database + media recovery checkpoint.\n'
+  "${PROJECT_DIR}/scripts/backup_round1.sh" "${PROJECT_DIR}/backups"
+}
+
+show_backups() {
+  printf 'Backup artifacts (INCOMPLETE means unusable):\n'
+  find "${PROJECT_DIR}/backups" -mindepth 1 -maxdepth 2 \( -name manifest.json -o -name INCOMPLETE \) -print 2>/dev/null || true
+}
+
 print_menu() {
   cat <<'MENU'
 
@@ -307,7 +318,9 @@ Round 1 local menu
 3. View application/service logs
 4. Run the isolated PostgreSQL test suite
 5. Apply migrations to the configured local development database
-6. Stop preview services
+6. Create a backup of the configured database and local media
+7. Show backup artifact status
+8. Stop preview services
 0. Exit without stopping running services
 MENU
 }
@@ -325,7 +338,9 @@ main() {
       3) view_logs || true ;;
       4) run_tests || true ;;
       5) migrate_configured_development || true ;;
-      6) stop_preview || true ;;
+      6) create_backup || true ;;
+      7) show_backups || true ;;
+      8) stop_preview || true ;;
       0) return 0 ;;
       *) printf 'Unknown option: %s\n' "${choice}" ;;
     esac

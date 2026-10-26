@@ -4,13 +4,14 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
 from ..dependencies import require_player
 from ..models import Admin, PlayerDevice, Team
+from ..player_sessions import ROUND_CAPACITY, authorize_session, lease_expiry, lock_login_round
 from ..security import create_token, hash_password_async, verify_password_async
 from ..timing import utc_now
 
@@ -40,8 +41,9 @@ def new_activation_token() -> tuple[str, str]:
 
 @router.post("/team/login")
 async def team_login(data: LoginIn, db: AsyncSession = Depends(get_db)):
-    # Locking the team row makes the one-session check atomic across API workers.
     async with db.begin():
+        # Global lock order is Round -> Team -> Session.
+        round_obj = await lock_login_round(db)
         team = (await db.execute(select(Team).where(
             Team.login_username == data.username, Team.enabled.is_(True)
         ).with_for_update())).scalar_one_or_none()
@@ -49,51 +51,75 @@ async def team_login(data: LoginIn, db: AsyncSession = Depends(get_db)):
             raise HTTPException(401, "Invalid team credentials")
 
         now = utc_now()
-        device = (await db.execute(select(PlayerDevice).where(
-            PlayerDevice.team_id == team.id
-        ).with_for_update())).scalar_one_or_none()
-        if device and device.active and device.expires_at > now:
-            raise HTTPException(409, "This team already has an active login")
+        await db.execute(update(PlayerDevice).where(
+            PlayerDevice.team_id == team.id,
+            PlayerDevice.round_code == round_obj.code,
+            PlayerDevice.active.is_(True),
+            PlayerDevice.expires_at <= now,
+        ).values(active=False))
+        active_slots = set((await db.scalars(select(PlayerDevice.player_number).where(
+            PlayerDevice.team_id == team.id,
+            PlayerDevice.round_code == round_obj.code,
+            PlayerDevice.active.is_(True),
+        ))).all())
+        slot = next((n for n in range(1, ROUND_CAPACITY[round_obj.code] + 1)
+                     if n not in active_slots), None)
+        if slot is None:
+            raise HTTPException(409, f"{round_obj.code} session capacity is full")
 
         session_id = secrets.token_hex(32)
-        expires_at = now + timedelta(minutes=settings.access_token_minutes)
-        if device:
-            device.session_id = session_id
-            device.active = True
-            device.created_at = now
-            device.expires_at = expires_at
-            device.last_seen_at = now
-        else:
-            db.add(PlayerDevice(team_id=team.id, player_number=1,
-                                session_id=session_id, expires_at=expires_at,
-                                last_seen_at=now))
+        expires_at = lease_expiry(now)
+        db.add(PlayerDevice(team_id=team.id, player_number=slot, round_code=round_obj.code,
+                            session_id=session_id, expires_at=expires_at, last_seen_at=now))
 
     return {
-        "access_token": create_token(team.code, "team", team.id, session_id),
+        "access_token": create_token(team.code, "team", team.id, session_id, round_obj.code, slot),
         "team_code": team.code,
         "team_name": team.name,
+        "round_code": round_obj.code,
+        "slot": slot,
+        "lease_expires_at": expires_at,
+        "heartbeat_interval_seconds": settings.player_heartbeat_seconds,
     }
 
 
 @router.post("/team/logout")
 async def team_logout(user=Depends(require_player), db: AsyncSession = Depends(get_db)):
-    device = (await db.execute(select(PlayerDevice).where(
-        PlayerDevice.team_id == user["team_id"], PlayerDevice.session_id == user["sid"]
-    ))).scalar_one_or_none()
-    if device:
+    async with db.begin():
+        device = await authorize_session(db, user, user["round_code"], lock=True)
         device.active = False
-        await db.commit()
     return {"ok": True}
 
 
 @router.post("/team/heartbeat")
 async def team_heartbeat(user=Depends(require_player), db: AsyncSession = Depends(get_db)):
-    device = (await db.execute(select(PlayerDevice).where(
-        PlayerDevice.team_id == user["team_id"], PlayerDevice.session_id == user["sid"]
-    ))).scalar_one()
-    device.last_seen_at = utc_now()
-    await db.commit()
-    return {"ok": True, "last_seen_at": device.last_seen_at}
+    async with db.begin():
+        device = await authorize_session(db, user, user["round_code"], lock=True)
+        now = utc_now()
+        device.last_seen_at = now
+        device.expires_at = lease_expiry(now)
+    return {"ok": True, "last_seen_at": device.last_seen_at,
+            "lease_expires_at": device.expires_at}
+
+
+@router.post("/team/departing")
+async def team_departing(user=Depends(require_player), db: AsyncSession = Depends(get_db)):
+    """Best-effort unload hint; a quick refresh heartbeat cancels the short lease."""
+    async with db.begin():
+        device = await authorize_session(db, user, user["round_code"], lock=True)
+        now = utc_now()
+        device.expires_at = min(device.expires_at, now + timedelta(seconds=10))
+    return {"ok": True, "lease_expires_at": device.expires_at}
+
+
+@router.get("/team/me")
+async def team_me(user=Depends(require_player), db: AsyncSession = Depends(get_db)):
+    device = await authorize_session(db, user, user["round_code"])
+    return {"team_id": device.team_id, "team_code": user["sub"],
+            "session_id": device.session_id, "round_code": device.round_code,
+            "slot": device.player_number, "lease_expires_at": device.expires_at,
+            "token_expires_at": user.get("exp"),
+            "heartbeat_interval_seconds": settings.player_heartbeat_seconds}
 
 
 @router.post("/team/set-password")

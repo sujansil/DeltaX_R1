@@ -2,6 +2,8 @@
 const $ = id => document.getElementById(id);
 for (const round of ["R1A", "R1B"]) {
   const start = document.querySelector('[data-action="start"][data-round="' + round + '"]');
+  const validate = document.createElement("button"); validate.dataset.action = "validate"; validate.dataset.round = round;
+  validate.textContent = "Validate " + (round === "R1A" ? "1(a)" : "1(b)"); validate.className = "secondary"; start.before(validate);
   for (const [action, label] of [["pause", "Pause " + (round === "R1A" ? "1(a)" : "1(b)")], ["resume", "Resume " + (round === "R1A" ? "1(a)" : "1(b)")]]) {
     const control = document.createElement("button"); control.dataset.action = action; control.dataset.round = round;
     control.textContent = label; control.className = "secondary"; start.after(control);
@@ -12,6 +14,7 @@ $("teamRows").closest("table").querySelector("thead tr").append(connectionHeadin
 let token = localStorage.getItem("adminToken");
 function session(active) { $("loginPanel").hidden = active; $("panel").hidden = !active; $("logout").hidden = !active; }
 function message(text, error = false) { $("message").textContent = text; $("message").classList.toggle("error", error); }
+function errorDetail(detail) { return detail && typeof detail === "object" ? detail.message : detail; }
 async function call(path, body, method = "POST") {
   const headers = token ? {Authorization: "Bearer " + token} : {};
   if (body && !(body instanceof FormData)) { headers["Content-Type"] = "application/json"; body = JSON.stringify(body); }
@@ -19,7 +22,7 @@ async function call(path, body, method = "POST") {
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401) { localStorage.removeItem("adminToken"); token = null; session(false); }
-    const detail = Array.isArray(result.detail) ? result.detail.map(e => e.loc.join(".") + ": " + e.msg).join("\n") : result.detail;
+    const detail = Array.isArray(result.detail) ? result.detail.map(e => e.loc.join(".") + ": " + e.msg).join("\n") : errorDetail(result.detail);
     throw Error(detail || "Request failed (" + response.status + ")");
   }
   return result;
@@ -46,6 +49,17 @@ form("bootstrapForm", async data => {
   $("bootstrapForm").reset(); return {message: "Admin created. Log in above.", username: result.username};
 });
 $("logout").onclick = () => { token = null; localStorage.removeItem("adminToken"); session(false); $("out").textContent = ""; message("Signed out."); };
+$("downloadResults").onclick = () => run($("downloadResults"), async () => {
+  const response = await fetch("/api/admin/exports/results.xlsx?scope=" + encodeURIComponent($("exportScope").value),
+    {headers: {Authorization: "Bearer " + token}});
+  if (!response.ok) { const data = await response.json().catch(() => ({})); throw Error(errorDetail(data.detail) || "Export failed"); }
+  const blob = await response.blob(), link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  const disposition = response.headers.get("Content-Disposition") || "";
+  link.download = disposition.match(/filename="([^"]+)"/)?.[1] || "round1-results.xlsx";
+  link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  return {message: "Results workbook downloaded", scope: $("exportScope").value};
+});
 $("seed").onclick = e => run(e.target, () => call("/api/admin/rounds/seed"));
 form("teamForm", async data => {
   const result = await call("/api/admin/teams", {...data, password: data.password || null});
@@ -110,13 +124,21 @@ $("questionForm").addEventListener("submit", e => {
 document.querySelectorAll("[data-action]").forEach(button => {
   button.onclick = () => {
     const {action, round} = button.dataset;
-    if (action !== "publish" && !confirm(button.textContent + "? This affects every team.")) return;
-    run(button, () => call(action === "publish" ? "/api/admin/leaderboard/publish" : "/api/admin/rounds/" + action, {round_code: round}));
+    if (!["publish", "validate"].includes(action) && !confirm(button.textContent + "? This affects every team.")) return;
+    run(button, () => action === "validate"
+      ? call("/api/admin/rounds/" + round + "/validate", undefined, "GET")
+      : call(action === "publish" ? "/api/admin/leaderboard/publish" : "/api/admin/rounds/" + action, {round_code: round}));
   };
 });
 form("releaseForm", async data => {
-  if (!confirm("Sign out team " + data.team_id + "?")) return {message: "Cancelled"};
-  return call("/api/admin/teams/" + data.team_id + "/release-session");
+  if (!confirm("Revoke " + (data.session_id ? "this session" : "all sessions") + " for team " + data.team_id + "?")) return {message: "Cancelled"};
+  const suffix = data.session_id ? "/sessions/" + encodeURIComponent(data.session_id) + "/revoke" : "/sessions/revoke-all";
+  return call("/api/admin/teams/" + data.team_id + suffix, {reason: data.reason});
+});
+$("listSessions").onclick = e => run(e.target, () => {
+  const teamId = $("releaseForm").elements.team_id.value;
+  if (!teamId) throw Error("Enter a team ID first.");
+  return call("/api/admin/teams/" + teamId + "/sessions", undefined, "GET");
 });
 session(Boolean(token)); questionMode();
 
@@ -167,7 +189,7 @@ async function refreshDashboard() {
       teamButton.onclick = () => selectTeam(team.id);
       teamCell.append(teamButton); tr.append(teamCell);
       const seenSeconds = team.last_seen_at ? (Date.now() - Date.parse(team.last_seen_at)) / 1000 : Infinity;
-      const connection = !team.session_active ? "Signed out" : seenSeconds <= 35 ? "Online" : seenSeconds <= 120 ? "Recently seen" : "No heartbeat";
+      const connection = !team.session_active ? "Signed out" : team.active_session_count + " active · " + (seenSeconds <= 35 ? "Online" : "Lease active");
       [team.username, team.submission_count, team.points,
        team.last_submission_at ? new Date(team.last_submission_at).toLocaleString() : "No activity yet", connection].forEach(value => {
         const td = document.createElement("td"); td.textContent = value; tr.append(td);
