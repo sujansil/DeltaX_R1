@@ -1228,7 +1228,7 @@ function Questions() {
     </>
   );
 }
-function TeamDetail({ id, onClose, onSessions }) {
+function TeamDetail({ id, onClose, onSessions, onActivation }) {
   const { run, request, confirm } = useApp(),
     r = useData("/api/admin/teams/" + id),
     dashboard = useData("/api/admin/dashboard");
@@ -1349,6 +1349,35 @@ function TeamDetail({ id, onClose, onSessions }) {
                 kind="danger"
               />
             </form>
+            {!t.has_password && (
+              <form className="password-reset" onSubmit={(e) => {
+                e.preventDefault();
+                const reason = e.currentTarget.elements.reason.value.trim();
+                confirm({
+                  title: "Regenerate activation code?",
+                  description: "The previous code stops working immediately. The new code is shown once.",
+                  action: () => run(async () => {
+                    let d;
+                    try {
+                      d = await request(`/api/admin/teams/${id}/activation/regenerate`, {method:"POST", body:{reason}});
+                    } catch (error) {
+                      if (error.status === 404 && error.code === "TEAM_NOT_FOUND")
+                        throw new Error("This team no longer exists. Refresh the team directory.");
+                      if (error.status === 404)
+                        throw new Error("Activation regeneration is unavailable on the running server. Restart this Round 1 project with ./start.sh start.");
+                      throw error;
+                    }
+                    onActivation({...d, code:t.code, name:t.name});
+                    return "Activation code regenerated.";
+                  }),
+                });
+              }}>
+                <Field label="Regeneration reason" hint="Required confirmation. The authenticated action and team ID are audited; code and reason text are not.">
+                  <input name="reason" required maxLength={500} />
+                </Field>
+                <BusyButton label="Regenerate activation code" type="submit" />
+              </form>
+            )}
           </>
         )}
       </DataState>
@@ -1483,8 +1512,8 @@ function Teams() {
       )}
       {activation && (
         <Panel
-          title="Save this activation token privately"
-          description="Shown only for the team just created in this browser. It is not a password."
+          title="Save this activation code privately"
+          description="Shown only when generated in this browser. It is not a password."
         >
           <p>
             <b>
@@ -1495,12 +1524,12 @@ function Teams() {
             {activation.activation_token}
           </code>
           <p className="help">
-            Expires {date(activation.activation_expires_at)}. Share directly
-            with the team.
+            Login username: <b>{activation.username}</b> · Expires {date(activation.activation_expires_at)}. Share directly with the team.
           </p>
-          <Button kind="small" onClick={() => setActivation(null)}>
-            Hide token
-          </Button>
+          <div className="actions">
+            <Button kind="small" onClick={() => navigator.clipboard.writeText(activation.activation_token)}>Copy code</Button>
+            <Button kind="small" onClick={() => setActivation(null)}>Hide code</Button>
+          </div>
         </Panel>
       )}
       {selected && (
@@ -1509,6 +1538,7 @@ function Teams() {
           id={selected}
           onClose={() => setSelected(null)}
           onSessions={(id) => go("sessions", id)}
+          onActivation={setActivation}
         />
       )}
     </>

@@ -1,16 +1,18 @@
 from datetime import timedelta
 import hashlib
+import hmac
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
 from ..dependencies import require_player
-from ..models import Admin, PlayerDevice, Team
+from ..models import ActivationThrottle, Admin, PlayerDevice, Team
 from ..player_sessions import ROUND_CAPACITY, authorize_session, lease_expiry, lock_login_round
 from ..security import create_token, hash_password_async, verify_password_async
 from ..timing import utc_now
@@ -25,18 +27,62 @@ class LoginIn(BaseModel):
 
 
 class TeamCreatePasswordIn(BaseModel):
-    team_code: str = Field(min_length=1, max_length=32)
-    activation_token: str = Field(min_length=20, max_length=256)
+    username: str = Field(min_length=1, max_length=120)
+    activation_token: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=8, max_length=128)
 
 
+ACTIVATION_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def normalize_activation_code(value: str) -> str:
+    return "".join(ch for ch in value.upper() if ch not in " -")
+
+
+def format_activation_code(value: str) -> str:
+    normalized = normalize_activation_code(value)
+    return f"{normalized[:4]}-{normalized[4:]}"
+
+
 def activation_hash(token: str) -> str:
+    """Key the digest so an 8-character code cannot be brute-forced from a DB dump."""
+    payload = b"activation-code:" + normalize_activation_code(token).encode()
+    return hmac.new(settings.secret_key.encode(), payload, hashlib.sha256).hexdigest()
+
+
+def legacy_activation_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def new_activation_token() -> tuple[str, str]:
-    token = secrets.token_urlsafe(32)
-    return token, activation_hash(token)
+    code = "".join(secrets.choice(ACTIVATION_ALPHABET) for _ in range(8))
+    return format_activation_code(code), activation_hash(code)
+
+
+def throttle_digest(username: str) -> str:
+    payload = b"activation-throttle:" + username.encode()
+    return hmac.new(settings.secret_key.encode(), payload, hashlib.sha256).hexdigest()
+
+
+async def locked_throttle(db: AsyncSession, username: str, now):
+    digest = throttle_digest(username)
+    await db.execute(insert(ActivationThrottle).values(
+        identifier_digest=digest, window_started_at=now, updated_at=now,
+    ).on_conflict_do_nothing(index_elements=[ActivationThrottle.identifier_digest]))
+    return await db.scalar(select(ActivationThrottle).where(
+        ActivationThrottle.identifier_digest == digest).with_for_update())
+
+
+def record_activation_failure(row: ActivationThrottle, now) -> None:
+    window = timedelta(minutes=settings.activation_attempt_window_minutes)
+    if now - row.window_started_at >= window:
+        row.failed_attempts = 0
+        row.window_started_at = now
+        row.locked_until = None
+    row.failed_attempts += 1
+    row.updated_at = now
+    if row.failed_attempts >= settings.activation_failed_attempt_limit:
+        row.locked_until = now + timedelta(minutes=settings.activation_lockout_minutes)
 
 
 @router.post("/team/login")
@@ -124,24 +170,39 @@ async def team_me(user=Depends(require_player), db: AsyncSession = Depends(get_d
 
 @router.post("/team/set-password")
 async def team_set_password(data: TeamCreatePasswordIn, db: AsyncSession = Depends(get_db)):
+    rejected = False
     async with db.begin():
-        team = (await db.execute(select(Team).where(
-            Team.code == data.team_code
-        ).with_for_update())).scalar_one_or_none()
         now = utc_now()
+        throttle = await locked_throttle(db, data.username, now)
+        team = (await db.execute(select(Team).where(
+            Team.login_username == data.username
+        ).with_for_update())).scalar_one_or_none()
+        normalized = normalize_activation_code(data.activation_token)
+        code_well_formed = len(normalized) == 8 and all(c in ACTIVATION_ALPHABET for c in normalized)
+        supplied_hashes = {legacy_activation_hash(data.activation_token)}
+        if code_well_formed:
+            supplied_hashes.add(activation_hash(normalized))
         valid = (
-            team is not None
+            not (throttle.locked_until and throttle.locked_until > now)
+            and team is not None
             and team.password_hash is None
             and team.activation_token_hash is not None
-            and secrets.compare_digest(team.activation_token_hash, activation_hash(data.activation_token))
+            and any(secrets.compare_digest(team.activation_token_hash, candidate)
+                    for candidate in supplied_hashes)
             and team.activation_expires_at is not None
             and team.activation_expires_at > now
         )
         if not valid:
-            raise HTTPException(400, "Invalid or expired activation details")
-        team.password_hash = await hash_password_async(data.new_password)
-        team.activation_token_hash = None
-        team.activation_expires_at = None
+            record_activation_failure(throttle, now)
+            rejected = True
+        else:
+            team.password_hash = await hash_password_async(data.new_password)
+            team.activation_token_hash = None
+            team.activation_expires_at = None
+            await db.execute(delete(ActivationThrottle).where(
+                ActivationThrottle.identifier_digest == throttle.identifier_digest))
+    if rejected:
+        raise HTTPException(400, "Invalid or expired activation details")
     return {"ok": True}
 
 

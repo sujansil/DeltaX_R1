@@ -41,6 +41,15 @@ class Team(Base):
         Index("ix_teams_login_username", "login_username", unique=True),
     )
 
+class ActivationThrottle(Base):
+    """Database-shared failed-attempt counter keyed by a one-way login digest."""
+    __tablename__ = "activation_throttles"
+    identifier_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 class PlayerDevice(Base):
     __tablename__ = "player_devices"
     id: Mapped[int] = mapped_column(primary_key=True)

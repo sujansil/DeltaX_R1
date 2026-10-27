@@ -84,4 +84,5 @@ async def test_own_rank_outside_top16_is_preserved():
     rows=[{"rank":n,"team_id":n,"team_name":str(n),"score":100-n} for n in range(1,20)]
     snap=SimpleNamespace(id=3,published_at=datetime.now(timezone.utc),data_json=json.dumps({"kind":KIND,"after_question":1,"rows":rows}))
     db=MagicMock();db.scalar=AsyncMock(return_value=snap);b=await read_leaderboard(db,"R1A",19)
-    assert len(b["data"])==16 and b["mine"]["rank"]==19 and b["automatic"] is True
+    assert [row["rank"] for row in b["data"]] == list(range(1, 17))
+    assert b["total_teams"] == 19 and b["mine"]["rank"] == 19 and b["automatic"] is True

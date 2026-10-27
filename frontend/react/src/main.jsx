@@ -22,7 +22,7 @@ function Diagram({url,option=false}){if(!url)return null;return <img className={
 function Login({onLogin,notice,reduced}) {
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[activation,setActivation]=useState(false),[show,setShow]=useState(false),[success,setSuccess]=useState('');
  async function submit(e){e.preventDefault();if(busy)return;setBusy(true);setError('');setSuccess('');const f=new FormData(e.currentTarget);
- try{if(activation){await api('/api/auth/team/set-password',{method:'POST',body:{team_code:f.get('code'),activation_token:f.get('activation'),new_password:f.get('password')}});setActivation(false);setSuccess('Password created. Sign in with your team username.');}
+ try{if(activation){await api('/api/auth/team/set-password',{method:'POST',body:{username:f.get('username').trim(),activation_token:f.get('activation'),new_password:f.get('password')}});setActivation(false);setSuccess('Password created. Sign in with your team username.');}
  else{const d=await api('/api/auth/team/login',{method:'POST',body:{username:f.get('username').trim(),password:f.get('password')}});onLogin(d.access_token);}}
  catch(e){setError(e.message)}finally{setBusy(false)}}
  return <main className="login-page"><a className="skip-link" href="#credentials">Skip to team login</a>
@@ -34,7 +34,7 @@ function Login({onLogin,notice,reduced}) {
   <section className="credential-section" id="credentials"><div className="credential-inner"><div className="section-number">01 / ENTER</div><h1>{activation?'Activate your team.':'Your team. Your next move.'}</h1><p className="muted">{activation?'Use the activation details shared by the organisers.':'Sign in when your team is ready. The server assigns your round and relay slot.'}</p>
    {(notice||error)&&<div className="notice error" role="alert">{error||notice}</div>}{success&&<div className="notice" role="status">{success}</div>}
    <form onSubmit={submit} key={activation?'activation':'login'}>
-    {activation?<><label>Team code<input name="code" required maxLength={32} autoComplete="username"/></label><label>Activation token<input name="activation" required minLength={20} maxLength={256} autoComplete="off" spellCheck="false"/></label></>:<label>Team username<input name="username" required maxLength={120} autoComplete="username" autoCapitalize="none" spellCheck="false" placeholder="Your assigned username"/></label>}
+    {activation?<><label>Team username<input name="username" required maxLength={120} autoComplete="username" autoCapitalize="none" spellCheck="false" placeholder="Your assigned username"/></label><label>Activation code<input name="activation" required maxLength={256} autoComplete="one-time-code" autoCapitalize="characters" spellCheck="false" placeholder="XXXX-XXXX"/></label></>:<label>Team username<input name="username" required maxLength={120} autoComplete="username" autoCapitalize="none" spellCheck="false" placeholder="Your assigned username"/></label>}
     <label>{activation?'Choose a password':'Password'}<span className="password-wrap"><input aria-label={activation?'Choose a password':'Password'} name="password" required type={show?'text':'password'} minLength={activation?8:1} maxLength={activation?128:256} autoComplete={activation?'new-password':'current-password'} placeholder="••••••••"/><button type="button" className="password-toggle" onClick={()=>setShow(!show)} aria-label={show?'Hide password':'Show password'}>{show?'Hide':'Show'}</button></span></label>
     <button className="primary full" disabled={busy}>{busy?'Connecting…':activation?'Create password':'Enter the arena'}<span aria-hidden="true">↗</span></button>
    </form>
@@ -104,10 +104,10 @@ function QuestionLeaderboard({state}) {
   <h1>Leaderboard</h1>
   <p className="board-intro">{board?.published?`After question ${String(board.after_question).padStart(2,'0')}`:'Finalising the question results…'}</p>
   {board?.published&&<>
-   <div className="board-table-wrap"><table><thead><tr><th scope="col">Rank</th><th scope="col">Team</th><th scope="col">Score</th></tr></thead><tbody>{board.data.map(row=><tr key={row.team_id} className={row.team_id===state.identity.team_id?'my-team':''}><td>#{row.rank}</td><th scope="row">{row.team_name}{row.team_id===state.identity.team_id&&<small>You</small>}</th><td>{formatScore(row.score)}</td></tr>)}</tbody></table></div>
+   <div className="board-table-wrap" tabIndex="0" aria-label={`Published leaderboard, ${board.data.length} teams`}><table><thead><tr><th scope="col">Rank</th><th scope="col">Team</th><th scope="col">Score</th></tr></thead><tbody>{board.data.map(row=><tr key={row.team_id} className={row.team_id===state.identity.team_id?'my-team':''}><td>#{row.rank}</td><th scope="row">{row.team_name}{row.team_id===state.identity.team_id&&<small>You</small>}</th><td>{formatScore(row.score)}</td></tr>)}</tbody></table></div>
    {!board.data.length&&<p className="micro-copy">No enrolled teams in this snapshot.</p>}
    {board.mine&&!board.data.some(row=>row.team_id===state.identity.team_id)&&<div className="own-standing"><span>Your team · #{board.mine.rank}</span><strong>{formatScore(board.mine.score)} pts</strong></div>}
-   <p className="micro-copy">{board.total_teams>16?'Top 16 shown. ':''}Updated automatically when the question closes.</p>
+   <p className="micro-copy">{board.data.length>5?'Scroll inside the table to see lower ranks. ':''}{board.total_teams>16?'Top 16 shown. ':board.data.length?`All ${board.data.length} ranked teams shown. `:''}Updated automatically when the question closes.</p>
   </>}
   <p className="next-question-note">{state.round.status==='ENDED'?'WizTime is complete. Your recorded results are saved.':'The next question opens when the organiser reveals it.'}</p>
  </section>;

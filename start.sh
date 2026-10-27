@@ -96,6 +96,20 @@ wait_for_health() {
   return 1
 }
 
+port_8000_available() {
+  "${PROJECT_DIR}/.venv/bin/python" - <<'PY'
+import socket
+
+sock = socket.socket()
+try:
+    sock.bind(("127.0.0.1", 8000))
+except OSError:
+    raise SystemExit(1)
+finally:
+    sock.close()
+PY
+}
+
 offer_demo_seed() {
   local answer
   printf 'Seed sample teams and questions in the preview database? [y/N] '
@@ -168,28 +182,34 @@ start_preview() {
 
   local pid
   if pid="$(tracked_app_pid)"; then
-    printf 'Preview application is already running with PID %s.\n' "${pid}"
-  else
-    rm -f "${PID_FILE}"
-    if curl --silent --fail --max-time 1 "${HEALTH_URL}" >/dev/null 2>&1; then
-      printf 'Port 8000 is already serving another application; refusing to start a duplicate.\n' >&2
-      return 1
-    fi
-    printf 'Starting Uvicorn on 127.0.0.1:8000...\n'
-    (
-      cd "${PROJECT_DIR}" || exit 1
-      nohup "${PROJECT_DIR}/.venv/bin/uvicorn" app.main:app --host 127.0.0.1 --port 8000 \
-        >>"${APP_LOG}" 2>&1 &
-      printf '%s\n' "$!" >"${PID_FILE}"
-    )
-    if ! wait_for_health; then
-      printf 'Application failed its health check. Recent application logs:\n' >&2
-      tail -n 80 "${APP_LOG}" >&2 || true
-      stop_tracked_app
-      return 1
-    fi
-    offer_demo_seed || printf 'Demo seeding did not complete; the preview itself is still running.\n' >&2
+    printf 'Restarting this Round 1 preview (PID %s) so current code and routes are loaded...\n' "${pid}"
+    stop_tracked_app || return 1
+  elif ! port_8000_available; then
+    printf 'Port 8000 is already in use by another process or container.\n' >&2
+    printf 'Round 1 was not started, and the conflicting application was left untouched.\n' >&2
+    printf 'Stop or reconfigure the conflicting application, then run: %s start\n' "${PROJECT_DIR}/start.sh" >&2
+    return 1
   fi
+  if ! port_8000_available; then
+    printf 'Port 8000 remained occupied after the tracked Round 1 process stopped.\n' >&2
+    printf 'Nothing else was terminated; Round 1 was not started.\n' >&2
+    return 1
+  fi
+  rm -f "${PID_FILE}"
+  printf 'Starting this Round 1 project from %s on 127.0.0.1:8000...\n' "${PROJECT_DIR}"
+  (
+    cd "${PROJECT_DIR}" || exit 1
+    nohup "${PROJECT_DIR}/.venv/bin/uvicorn" app.main:app --host 127.0.0.1 --port 8000 \
+      >>"${APP_LOG}" 2>&1 &
+    printf '%s\n' "$!" >"${PID_FILE}"
+  )
+  if ! wait_for_health; then
+    printf 'Application failed its health check. Recent application logs:\n' >&2
+    tail -n 80 "${APP_LOG}" >&2 || true
+    stop_tracked_app
+    return 1
+  fi
+  offer_demo_seed || printf 'Demo seeding did not complete; the preview itself is still running.\n' >&2
   show_status
 }
 
@@ -327,6 +347,17 @@ MENU
 
 main() {
   cd "${PROJECT_DIR}" || exit 1
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      start) start_preview ;;
+      status) show_status ;;
+      logs) view_logs ;;
+      test) run_tests ;;
+      stop) stop_preview ;;
+      *) printf 'Usage: %s [start|status|logs|test|stop]\n' "$0" >&2; return 2 ;;
+    esac
+    return $?
+  fi
   while true; do
     print_menu
     printf 'Choose an option: '

@@ -41,6 +41,9 @@ class TeamUpdate(BaseModel):
 class PasswordResetIn(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
 
+class ActivationRegenerateIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
 class ValidationIssueOut(BaseModel):
     code: str
     field: str
@@ -469,6 +472,26 @@ async def get_team(team_id: int, user=Depends(require_admin), db: AsyncSession=D
             "username": team.login_username, "enabled": team.enabled,
             "created_at": team.created_at, "enrolled_rounds": enrolled,
             "has_password": team.password_hash is not None}
+
+
+@router.post("/teams/{team_id}/activation/regenerate")
+async def regenerate_team_activation(team_id: int, data: ActivationRegenerateIn,
+                                     user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
+    """Replace an unconsumed activation code; plaintext exists only in this response."""
+    async with db.begin():
+        team = await db.scalar(select(Team).where(Team.id == team_id).with_for_update())
+        if not team:
+            raise admin_error(404, "TEAM_NOT_FOUND", "Team not found")
+        if team.password_hash is not None:
+            raise admin_error(409, "TEAM_ALREADY_ACTIVATED", "Activated teams use password reset")
+        activation_code, digest = new_activation_token()
+        expires = utc_now() + timedelta(hours=settings.activation_token_hours)
+        team.activation_token_hash = digest
+        team.activation_expires_at = expires
+        await audit(db, user, "REGENERATE_TEAM_ACTIVATION",
+                    f"team_id={team.id}")
+    return {"team_id": team.id, "username": team.login_username,
+            "activation_token": activation_code, "activation_expires_at": expires}
 
 
 @router.put("/teams/{team_id}")
