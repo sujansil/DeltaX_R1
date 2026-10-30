@@ -8,6 +8,7 @@ LOG_DIR="${RUNTIME_DIR}/logs"
 ENV_FILE="${RUNTIME_DIR}/preview.env"
 PID_FILE="${RUN_DIR}/uvicorn.pid"
 APP_LOG="${LOG_DIR}/app.log"
+MIGRATION_LOG="${LOG_DIR}/migration.log"
 COMPOSE_FILE="${PROJECT_DIR}/docker-compose.preview.yml"
 COMPOSE_PROJECT="round1_local_preview"
 PLAYER_URL="http://127.0.0.1:8000/player/"
@@ -174,9 +175,11 @@ start_preview() {
   fi
 
   printf 'Applying migrations to the identified preview database...\n'
-  if ! (cd "${PROJECT_DIR}" && "${PROJECT_DIR}/.venv/bin/alembic" upgrade head); then
-    printf 'Preview migration failed. PostgreSQL logs:\n' >&2
-    compose logs --tail 80 postgres-preview >&2 || true
+  if ! (cd "${PROJECT_DIR}" && "${PROJECT_DIR}/.venv/bin/alembic" upgrade head) \
+      >"${MIGRATION_LOG}" 2>&1; then
+    printf 'Preview migration/import failed. Recent Alembic output (%s):\n' "${MIGRATION_LOG}" >&2
+    tail -n 100 "${MIGRATION_LOG}" >&2 || true
+    printf 'PostgreSQL passed its readiness check; service logs were not dumped.\n' >&2
     return 1
   fi
 
@@ -247,6 +250,14 @@ run_tests() {
   check_prerequisites || return 1
   printf 'Running the isolated PostgreSQL suite via scripts/test_postgres.sh...\n'
   (cd "${PROJECT_DIR}" && ./scripts/test_postgres.sh)
+}
+
+launch_players() {
+  [[ -x "${PROJECT_DIR}/.venv/bin/python" ]] || {
+    explain_prerequisite "project virtual environment" "Create .venv and install requirements-dev.txt first."
+    return 1
+  }
+  (cd "${PROJECT_DIR}" && "${PROJECT_DIR}/.venv/bin/python" scripts/player_launcher.py)
 }
 
 migrate_configured_development() {
@@ -341,6 +352,7 @@ Round 1 local menu
 6. Create a backup of the configured database and local media
 7. Show backup artifact status
 8. Stop preview services
+9. Launch visible multi-player browser sessions
 0. Exit without stopping running services
 MENU
 }
@@ -354,7 +366,8 @@ main() {
       logs) view_logs ;;
       test) run_tests ;;
       stop) stop_preview ;;
-      *) printf 'Usage: %s [start|status|logs|test|stop]\n' "$0" >&2; return 2 ;;
+      players) launch_players ;;
+      *) printf 'Usage: %s [start|status|logs|test|stop|players]\n' "$0" >&2; return 2 ;;
     esac
     return $?
   fi
@@ -372,6 +385,7 @@ main() {
       6) create_backup || true ;;
       7) show_backups || true ;;
       8) stop_preview || true ;;
+      9) launch_players || true ;;
       0) return 0 ;;
       *) printf 'Unknown option: %s\n' "${choice}" ;;
     esac

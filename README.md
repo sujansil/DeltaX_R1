@@ -249,6 +249,66 @@ adds round/slot checks plus an active-slot partial unique index. Apply normally:
 .venv/bin/alembic upgrade head
 ```
 
+## Local multi-player browser launcher
+
+The Playwright launcher opens the real `/player/` frontend in a separate browser
+context for every simulated device. Cookies, `localStorage`, and `sessionStorage`
+are isolated. Every headed window uses a 390x844 viewport with touch/mobile
+emulation and has a fixed `SIM-* · R1A/R1B · SLOT n` badge and matching title.
+It signs in through the normal player form, so the backend—not the launcher—owns
+round scope and slot allocation. It does not answer questions, start rounds,
+change rules, revoke sessions, or reset competition data.
+
+Install the separate development/test dependency set and Chromium once:
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/playwright install chromium
+```
+
+Start the application normally, then use either entry point:
+
+```bash
+./start.sh players
+# or directly:
+.venv/bin/python scripts/player_launcher.py
+```
+
+The interactive prompts request the application origin, R1A or R1B, team count,
+and sessions per team. R1A is fixed to one; R1B accepts one through four. The
+default is only two teams and one session, because each context has a full page
+and renderer: 10+ windows can consume several GB of RAM and significant CPU,
+especially during animation and polling. Increase the configurable team count
+gradually for the laptop being used. This is a manual functional-testing tool,
+not a load or stress-testing tool.
+
+Two credential modes are available:
+
+- Enter existing team usernames/passwords. Password input is hidden.
+- In a development environment only, authenticate as an admin and create or
+  reuse a clearly prefixed `SIM-*` set through the supported admin APIs. New
+  teams receive the hidden password supplied at the prompt. Existing teams are
+  never edited or password-reset; their existing password must match. Admin
+  passwords and bearer tokens are not printed or persisted. Provisioning is
+  refused when the protected server inspection endpoint is unavailable or does
+  not report `development`.
+
+The selected round must equal the server-owned login scope. The launcher reports
+the required lifecycle preparation instead of overriding it. In particular,
+R1A eligibility is snapshotted when R1A starts: simulator teams must already
+exist and be enabled **before** round start. If they were not enrolled, prepare a
+fresh development event; the launcher will not reset the round or database.
+
+Refresh keeps the token in that context and therefore retains the real session.
+The frontend's Logout calls the backend and frees the slot. Closing a window uses
+the existing departure hint/lease expiry behavior; the launcher adds no immediate
+revocation. Press Enter in its terminal (or interrupt it) to close all browser
+contexts and the Chromium process without changing competition state.
+
+Mobile viewport and touch emulation do not reproduce real phone CPU/GPU/network
+performance, OS sleep, background throttling, browser chrome, or every native
+touch behavior. Final checks on physical phones remain necessary.
+
 ## Round 1(b)
 
 `POST /api/r1b/start` prepares a team's relay after the admin opens R1B but consumes no

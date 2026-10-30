@@ -461,6 +461,30 @@ async def list_teams(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1,
     ]}
 
 
+@router.get("/simulator/inspect")
+async def inspect_simulator_scope(user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
+    """Read-only facts needed by the local, development-only player launcher."""
+    if settings.environment != "development":
+        raise HTTPException(404, "Player simulator is available only in development")
+    rounds = (await db.scalars(select(Round).where(
+        Round.code.in_(("R1A", "R1B"))).order_by(Round.code))).all()
+    by_code = {row.code: row for row in rounds}
+    r1a, r1b = by_code.get("R1A"), by_code.get("R1B")
+    login_scope = None
+    if r1b and r1b.status in (RoundStatus.LIVE.value, RoundStatus.PAUSED.value):
+        login_scope = "R1B"
+    elif r1a and r1a.status != RoundStatus.ENDED.value:
+        login_scope = "R1A"
+    elif r1b and r1b.status != RoundStatus.ENDED.value:
+        login_scope = "R1B"
+    return {
+        "environment": settings.environment,
+        "login_scope": login_scope,
+        "rounds": {row.code: {"status": row.status, "started_at": row.started_at}
+                   for row in rounds},
+    }
+
+
 @router.get("/teams/{team_id}")
 async def get_team(team_id: int, user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
     team = await db.scalar(select(Team).where(Team.id == team_id))
