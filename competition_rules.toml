@@ -1,0 +1,21 @@
+# Round 1 competition rules. Changes apply to future round starts only.
+# Times are integer milliseconds; scores are integer points.
+version = "2026-10-round1-v1"
+
+[r1a]
+question_count = 23
+question_duration_ms = 30000       # 30 seconds
+full_score_until_ms = 10000        # full score through 10 seconds
+decay_end_ms = 25000               # minimum score reached at 25 seconds
+maximum_correct_score = 1000
+minimum_correct_score = 250
+wrong_answer_score = -500
+unanswered_score = 0
+
+[r1b]
+turn_count = 4                     # fixed: matches the four relay/player slots
+total_answering_budget_ms = 1680000 # 28 minutes
+correct_score = 4000
+wrong_score = -1500
+skip_unanswered_score = 0
+default_timer_mode = "CONTINUOUS" # or PAUSE_DURING_HANDOVER

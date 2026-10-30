@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Question, QuestionOption, R1BTimerMode, Round
+from .competition_rules import round_rules
 
 
 def finite_nonnegative(value: Decimal | None) -> bool:
@@ -15,7 +16,8 @@ def finite_nonnegative(value: Decimal | None) -> bool:
 
 async def validate_round_configuration(db: AsyncSession, round_obj: Round) -> list[dict]:
     code = round_obj.code
-    required = 23 if code == "R1A" else 4
+    rules = round_rules(round_obj)
+    required = rules.r1a.question_count if code == "R1A" else rules.r1b.turn_count
     issues: list[dict] = []
     questions = (await db.scalars(select(Question).where(
         Question.round_code == code, Question.enabled.is_(True)

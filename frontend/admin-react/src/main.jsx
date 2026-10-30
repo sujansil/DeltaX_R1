@@ -404,7 +404,7 @@ function Overview() {
         act === "end"
           ? "Recorded scores remain. Unfinished drafts are not submitted early. This cannot be resumed."
           : act === "start" && round.code === "R1A"
-            ? "Question 1 is revealed immediately and its 30-second clock begins for every team."
+            ? `Question 1 is revealed immediately and its ${round.rules.r1a.question_duration_ms / 1000}-second clock begins for every team.`
             : "This changes the round for every team.",
       danger: act === "end",
       action: () =>
@@ -500,7 +500,7 @@ function Overview() {
                         </div>
                         {code === "R1A" ? (
                           <p>
-                            Question {round.position || 0} / 23 ·{" "}
+                            Question {round.position || 0} / {round.rules.r1a.question_count} ·{" "}
                             {round.question_active
                               ? "answer window open"
                               : "no open answer window"}
@@ -554,17 +554,17 @@ function Overview() {
                         {code === "R1A" && (
                           <div className="next-question">
                             <BusyButton
-                              label={`${(round.position || 0) >= 23 ? "All questions revealed" : "Reveal question " + ((round.position || 0) + 1)}`}
+                              label={`${(round.position || 0) >= round.rules.r1a.question_count ? "All questions revealed" : "Reveal question " + ((round.position || 0) + 1)}`}
                               disabled={
                                 round.status !== "LIVE" ||
                                 round.question_active ||
-                                (round.position || 0) >= 23
+                                (round.position || 0) >= round.rules.r1a.question_count
                               }
                               onClick={() =>
                                 confirm({
                                   title: `Reveal question ${(round.position || 0) + 1}?`,
                                   description:
-                                    "The shared 30-second timer begins immediately.",
+                                    `The shared ${round.rules.r1a.question_duration_ms / 1000}-second timer begins immediately.`,
                                   action: () =>
                                     run(
                                       () =>
@@ -581,7 +581,7 @@ function Overview() {
                               }
                             />
                             <small>
-                              Questions 2–23 are revealed manually after the
+                              Questions 2–{round.rules.r1a.question_count} are revealed manually after the
                               previous window closes.
                             </small>
                           </div>
@@ -622,7 +622,7 @@ function Overview() {
       )}
       <Panel
         title="R1B clock policy"
-        description="Player 1 Ready starts the 28-minute budget. Mode is locked after the round starts."
+        description="Player 1 Ready starts the configured team budget. Mode is locked after the round starts."
       >
         <DataState r={timer}>
           {(t) => (
@@ -826,7 +826,7 @@ function ImageEditor({ kind, id, url, locked }) {
     </div>
   );
 }
-function QuestionForm({ question, round, locked, onSaved }) {
+function QuestionForm({ question, round, locked, onSaved, maxPosition }) {
   const { run, request } = useApp(),
     isNew = !question,
     numeric = round === "R1B";
@@ -869,7 +869,7 @@ function QuestionForm({ question, round, locked, onSaved }) {
               name="position"
               type="number"
               min={1}
-              max={numeric ? 4 : 23}
+              max={maxPosition}
               defaultValue={question?.position || 1}
               required
             />
@@ -1009,7 +1009,7 @@ function OptionEditor({ option, correct, locked }) {
     </div>
   );
 }
-function QuestionDetail({ id, round, onSaved, onClose, locked }) {
+function QuestionDetail({ id, round, onSaved, onClose, locked, maxPosition }) {
   const { run, request, confirm } = useApp(),
     q = useData(id === "new" ? null : "/api/admin/questions/" + id),
     [adding, setAdding] = useState(false);
@@ -1020,6 +1020,7 @@ function QuestionDetail({ id, round, onSaved, onClose, locked }) {
         round={round}
         locked={locked}
         onSaved={onSaved}
+        maxPosition={maxPosition}
       />
       {data && (
         <>
@@ -1150,6 +1151,10 @@ function Questions() {
     d = useData("/api/admin/dashboard");
   const locked =
     d.data?.rounds.find((x) => x.code === round)?.status !== "DRAFT";
+  const selectedRound = d.data?.rounds.find((x) => x.code === round);
+  const maxPosition = round === "R1A"
+    ? selectedRound?.rules?.r1a?.question_count
+    : selectedRound?.rules?.r1b?.turn_count;
   return (
     <>
       <Panel
@@ -1221,6 +1226,7 @@ function Questions() {
           id={id}
           round={round}
           locked={locked}
+          maxPosition={maxPosition}
           onSaved={setId}
           onClose={() => setId(null)}
         />
@@ -1701,6 +1707,12 @@ function Submissions() {
   const r = useData("/api/admin/submissions?" + params, {
     interval: auto ? 3000 : 0,
   });
+  const rulesData = useData("/api/admin/dashboard");
+  const roundRules = rulesData.data?.rounds || [];
+  const r1aCount = roundRules.find((x) => x.code === "R1A")?.rules?.r1a?.question_count;
+  const r1bCount = roundRules.find((x) => x.code === "R1B")?.rules?.r1b?.turn_count;
+  const maxPosition = filter.round === "R1B" ? r1bCount
+    : filter.round === "R1A" ? r1aCount : Math.max(r1aCount || 0, r1bCount || 0) || undefined;
   return (
     <Panel
       title="Question outcomes"
@@ -1729,7 +1741,7 @@ function Submissions() {
           <input
             type="number"
             min={1}
-            max={23}
+            max={maxPosition}
             value={filter.position}
             onChange={(e) => setFilter({ ...filter, position: e.target.value })}
             placeholder="All"
@@ -1905,7 +1917,7 @@ function Results() {
     <>
       <Panel
         title="Leaderboard reveal"
-        description="R1A scores and leaderboard reveal automatically after each 30-second question. The next question still requires the organiser’s reveal."
+        description="R1A scores and leaderboard reveal automatically after each configured question window. The next question still requires the organiser’s reveal."
       >
         <div className="actions">
           <span className="help">WizTime: automatic · no Publish step</span>

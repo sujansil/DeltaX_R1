@@ -22,6 +22,7 @@ from ..r1a_reconciliation import reconcile_r1a
 from ..r1b_finalization import effective_remaining_ms, finalize_expired_team
 from ..round_validation import validate_round_configuration
 from ..result_export import build_results_workbook
+from ..competition_rules import configured_rules, round_rules
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 settings = get_settings()
@@ -72,7 +73,7 @@ class QuestionCreate(BaseModel):
     enabled: bool = True
 
 class QuestionUpdate(BaseModel):
-    position: int | None = Field(default=None, ge=1, le=23)
+    position: int | None = Field(default=None, ge=1)
     question_text: str | None = None
     question_image_url: str | None = None
     correct_option_id: int | None = None
@@ -191,6 +192,11 @@ async def start_round(data: RoundAction, user=Depends(require_admin), db: AsyncS
     if issues:
         raise HTTPException(409, {"code": "ROUND_CONFIGURATION_INVALID",
                                   "message": "Round configuration is invalid", "issues": issues})
+    effective_rules = configured_rules()
+    if r.code == "R1B" and not r.r1b_timer_mode_selected:
+        r.r1b_timer_mode = effective_rules.r1b.default_timer_mode
+    r.rules_version = effective_rules.version
+    r.rules_snapshot = effective_rules.snapshot_json()
     r.status = RoundStatus.LIVE.value
     r.started_at = utc_now()
     if r.code == "R1A":
@@ -230,6 +236,7 @@ async def set_r1b_timer(data: R1BTimerConfig, user=Depends(require_admin),
     if r.status != RoundStatus.DRAFT.value or r.started_at is not None:
         raise HTTPException(409, "R1B timer mode is locked after the round starts")
     r.r1b_timer_mode = data.timer_mode.value
+    r.r1b_timer_mode_selected = True
     await audit(db, user, "SET_R1B_TIMER", f"mode={r.r1b_timer_mode}")
     await db.commit()
     return {
@@ -272,7 +279,8 @@ async def resume_round(data: RoundAction, user=Depends(require_admin), db: Async
     # Shift R1A only if it was still active when pause acquired its lock.
     # A pause after the deadline must not resurrect an expired question.
     if (r.code == "R1A" and r.question_started_at
-            and r.paused_at < r.question_started_at + timedelta(seconds=30)):
+            and r.paused_at < r.question_started_at + timedelta(
+                milliseconds=round_rules(r).r1a.question_duration_ms)):
         r.question_started_at += paused_for
     if r.code == "R1B":
         states = (await db.scalars(select(TeamRoundState).where(
@@ -294,7 +302,7 @@ async def resume_round(data: RoundAction, user=Depends(require_admin), db: Async
 
 
 class NextQuestion(BaseModel):
-    expected_position: int = Field(ge=0, le=23)
+    expected_position: int = Field(ge=0)
 
 
 @router.post("/r1a/next")
@@ -310,10 +318,11 @@ async def next_question(data: NextQuestion, user=Depends(require_admin), db: Asy
         raise HTTPException(409, "Start Round 1(a) first")
     if (r.current_position or 0) != data.expected_position:
         raise HTTPException(409, "Another admin advanced the question. Refresh the dashboard.")
-    if r.current_position == 23:
-        raise HTTPException(409, "All 23 questions have been revealed")
-    if r.question_started_at and now < r.question_started_at + timedelta(seconds=30):
-        raise HTTPException(409, "Wait for the current question's 30 seconds to finish")
+    rules = round_rules(r).r1a
+    if r.current_position == rules.question_count:
+        raise HTTPException(409, f"All {rules.question_count} questions have been revealed")
+    if r.question_started_at and now < r.question_started_at + timedelta(milliseconds=rules.question_duration_ms):
+        raise HTTPException(409, "Wait for the current question timer to finish")
     position = (r.current_position or 0) + 1
     q = await db.scalar(select(Question).where(Question.round_code == "R1A",
                        Question.position == position, Question.enabled.is_(True)))
@@ -323,7 +332,7 @@ async def next_question(data: NextQuestion, user=Depends(require_admin), db: Asy
     r.question_started_at = now
     await audit(db, user, "REVEAL_R1A_QUESTION", f"position={position}")
     await db.commit()
-    return {"position": position, "question_deadline": now + timedelta(seconds=30)}
+    return {"position": position, "question_deadline": now + timedelta(milliseconds=rules.question_duration_ms)}
 
 
 @router.get("/dashboard")
@@ -370,7 +379,8 @@ async def dashboard(r1b_offset: int = Query(0, ge=0), r1b_limit: int = Query(100
         {"code": r.code, "status": r.status, "position": r.current_position,
          "timer_mode": r.r1b_timer_mode if r.code == "R1B" else None,
          "question_active": position_at(r, now) is not None if r.code == "R1A" else False,
-         "question_deadline": r.question_started_at + timedelta(seconds=30) if r.question_started_at else None,
+         "question_deadline": r.question_started_at + timedelta(milliseconds=round_rules(r).r1a.question_duration_ms) if r.question_started_at else None,
+         "rules": round_rules(r).public_dict(),
          "paused_at": r.paused_at}
         for r in rounds],
         "r1b_teams": {"total": total_r1b or 0, "offset": r1b_offset, "limit": r1b_limit,
@@ -383,7 +393,7 @@ async def dashboard(r1b_offset: int = Query(0, ge=0), r1b_limit: int = Query(100
                                            and state.turn_status not in ("FINISHED", "EXPIRED")),
                      "timer_frozen": bool(not state or not state.clock_running_since or
                                           (r1b_round and r1b_round.status == "PAUSED")),
-                     "remaining_ms": effective_remaining_ms(state, reference) if state else 28 * 60 * 1000,
+                     "remaining_ms": effective_remaining_ms(state, reference) if state else round_rules(r1b_round).r1b.total_answering_budget_ms,
                      "deadline": state.team_deadline if state and state.clock_running_since else None,
                      "finished_at": state.finished_at if state else None,
                      "expired_at": state.expired_at if state else None,
@@ -393,7 +403,7 @@ async def dashboard(r1b_offset: int = Query(0, ge=0), r1b_limit: int = Query(100
 
 @router.get("/submissions")
 async def submissions(round_code: str | None = Query(None, pattern="^R1[AB]$"),
-                      position: int | None = Query(None, ge=1, le=23),
+                      position: int | None = Query(None, ge=1),
                       team_id: int | None = Query(None, ge=1),
                       offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
                       user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
@@ -624,7 +634,8 @@ async def create_question(data: QuestionCreate, user=Depends(require_admin), db:
     answer_type = data.answer_type.upper()
     if (round_code, answer_type) not in (("R1A", "MCQ"), ("R1B", "NUMERIC")):
         raise admin_error(422, "ANSWER_TYPE_INVALID", "R1A questions must be MCQ; R1B questions must be NUMERIC")
-    max_position = 23 if round_code == "R1A" else 4
+    rules = configured_rules()
+    max_position = rules.r1a.question_count if round_code == "R1A" else rules.r1b.turn_count
     if data.position > max_position:
         raise admin_error(422, "POSITION_INVALID", f"{round_code} position must be 1..{max_position}")
     await lock_draft_round(db, round_code)
@@ -726,7 +737,8 @@ async def update_question(question_id: int, data: QuestionUpdate,
     q = await db.scalar(select(Question).where(Question.id == question_id).with_for_update())
     values = data.model_fields_set
     if "position" in values:
-        max_position = 23 if round_code == "R1A" else 4
+        rules = configured_rules()
+        max_position = rules.r1a.question_count if round_code == "R1A" else rules.r1b.turn_count
         if data.position is None or data.position > max_position:
             raise admin_error(422, "POSITION_INVALID", f"{round_code} position must be 1..{max_position}")
         q.position = data.position
@@ -873,7 +885,9 @@ async def seed_rounds(user=Depends(require_admin), db: AsyncSession=Depends(get_
     created = []
     for code in ("R1A", "R1B"):
         existing = (await db.execute(select(Round).where(Round.code==code))).scalar_one_or_none()
-        if not existing: db.add(Round(code=code)); created.append(code)
+        if not existing:
+            db.add(Round(code=code, r1b_timer_mode=configured_rules().r1b.default_timer_mode))
+            created.append(code)
     await audit(db, user, "SEED_ROUNDS", f"created={','.join(created)}")
     await db.commit()
     return {"ok": True}
@@ -934,6 +948,8 @@ async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
         round_obj.current_position = None
         round_obj.question_started_at = None
         round_obj.paused_at = None
+        round_obj.rules_version = None
+        round_obj.rules_snapshot = None
 
     details = json.dumps({
         "reason": reason,

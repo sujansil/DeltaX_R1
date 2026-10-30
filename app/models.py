@@ -5,6 +5,7 @@ from enum import Enum
 from sqlalchemy import String, Boolean, Integer, BigInteger, DateTime, ForeignKey, Text, Numeric, UniqueConstraint, Index, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
+from .competition_rules import configured_rules
 
 def now():
     return datetime.now(timezone.utc)
@@ -101,6 +102,9 @@ class Round(Base):
         String(32), default=R1BTimerMode.CONTINUOUS.value,
         server_default=R1BTimerMode.CONTINUOUS.value,
     )
+    rules_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    rules_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    r1b_timer_mode_selected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     __table_args__ = (
         CheckConstraint(
             "r1b_timer_mode IN ('CONTINUOUS', 'PAUSE_DURING_HANDOVER')",
@@ -143,7 +147,7 @@ class TeamRoundState(Base):
     team_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     team_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     remaining_time_ms: Mapped[int] = mapped_column(
-        Integer, default=28 * 60 * 1000, server_default=str(28 * 60 * 1000)
+        Integer, default=lambda: configured_rules().r1b.total_answering_budget_ms
     )
     clock_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     clock_running_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

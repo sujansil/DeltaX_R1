@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import select, text
 from app.config import get_settings
+from app.competition_rules import configured_rules
 from app.db import SessionLocal, engine
 from app.models import Team, Round, Question, QuestionOption
 from app.security import hash_password
@@ -68,8 +69,9 @@ NUMERICAL = [
 async def seed():
     if get_settings().environment != "development":
         raise ValueError("Sample seed is for ENVIRONMENT=development only.")
-    if len(MCQS) != 23 or len(NUMERICAL) != 4:
-        raise ValueError("Provide exactly 23 MCQs and 4 numerical questions.")
+    rules = configured_rules()
+    if len(MCQS) < rules.r1a.question_count or len(NUMERICAL) < rules.r1b.turn_count:
+        raise ValueError("Sample data does not contain enough questions for competition_rules.toml.")
     for _, options, correct in MCQS:
         if not 1 <= correct <= len(options):
             raise ValueError("Correct option number must refer to an existing option.")
@@ -96,7 +98,8 @@ async def seed():
                             login_username=data["username"],
                             password_hash=hash_password(data["password"])))
                 messages.append(f"CREATED {data['code']} | {data['name']} | username={data['username']} | password={data['password']}")
-            for code, entries in (("R1A", MCQS), ("R1B", NUMERICAL)):
+            for code, entries in (("R1A", MCQS[:rules.r1a.question_count]),
+                                  ("R1B", NUMERICAL[:rules.r1b.turn_count])):
                 added = skipped = 0
                 for position, data in enumerate(entries, 1):
                     existing = await db.scalar(select(Question.id).where(

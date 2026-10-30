@@ -14,12 +14,9 @@ from ..timing import elapsed_ms, remaining_ms, utc_now
 from ..round_locking import lock_round
 from ..player_sessions import authorize_session
 from ..r1a_reconciliation import reconcile_r1a
+from ..competition_rules import round_rules
 
 router = APIRouter(prefix="/api/r1a", tags=["round-1a"])
-QUESTION_SECONDS = 30
-QUESTION_COUNT = 23
-
-
 class SubmitMCQ(BaseModel):
     option_id: int
 
@@ -27,10 +24,11 @@ class SubmitMCQ(BaseModel):
 def position_at(round_obj: Round, now):
     if round_obj.status != RoundStatus.LIVE.value or not round_obj.question_started_at:
         return None
-    if now < round_obj.question_started_at or now >= round_obj.question_started_at + timedelta(seconds=QUESTION_SECONDS):
+    rules = round_rules(round_obj).r1a
+    if now < round_obj.question_started_at or now >= round_obj.question_started_at + timedelta(milliseconds=rules.question_duration_ms):
         return None
     position = round_obj.current_position or 0
-    return position if 1 <= position <= QUESTION_COUNT else None
+    return position if 1 <= position <= rules.question_count else None
 
 
 async def live_context(db: AsyncSession, *, locked: bool = False, reconcile: bool = False):
@@ -55,9 +53,10 @@ async def state(user=Depends(require_player), db: AsyncSession = Depends(get_db)
     await db.commit()
     effective_status = round_obj.status
     if round_obj.status == RoundStatus.LIVE.value and position is None:
-        effective_status = "ENDED" if round_obj.current_position == QUESTION_COUNT else "WAITING"
-    deadline = (round_obj.question_started_at + timedelta(seconds=QUESTION_SECONDS)) if position else None
+        effective_status = "ENDED" if round_obj.current_position == round_rules(round_obj).r1a.question_count else "WAITING"
+    deadline = (round_obj.question_started_at + timedelta(milliseconds=round_rules(round_obj).r1a.question_duration_ms)) if position else None
     return {
+        "rules": round_rules(round_obj).public_dict(),
         "status": effective_status,
         "position": position,
         "last_position": round_obj.current_position,
@@ -84,9 +83,10 @@ async def question(user=Depends(require_player), db: AsyncSession = Depends(get_
     options = (await db.execute(select(QuestionOption).where(
         QuestionOption.question_id == q.id
     ).order_by(QuestionOption.position))).scalars().all()
-    deadline = round_obj.question_started_at + timedelta(seconds=QUESTION_SECONDS)
+    deadline = round_obj.question_started_at + timedelta(milliseconds=round_rules(round_obj).r1a.question_duration_ms)
     await db.commit()
     return {
+        "rules": round_rules(round_obj).public_dict(),
         "position": position,
         "question": {
             "id": q.id, "text": q.question_text, "image_url": q.question_image_url,
@@ -121,10 +121,11 @@ async def submit(data: SubmitMCQ, user=Depends(require_player), db: AsyncSession
 
     question_start = round_obj.question_started_at
     elapsed = elapsed_ms(question_start, now)
-    if elapsed >= QUESTION_SECONDS * 1000:
+    rules = round_rules(round_obj).r1a
+    if elapsed >= rules.question_duration_ms:
         raise HTTPException(409, "Question time has expired")
     result = "CORRECT" if data.option_id == q.correct_option_id else "WRONG"
-    points = r1a_result(result == "CORRECT", elapsed)
+    points = r1a_result(result == "CORRECT", elapsed, rules)
 
     statement = insert(Submission).values(
         team_id=user["team_id"], round_code="R1A", question_position=position,

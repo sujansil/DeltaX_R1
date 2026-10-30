@@ -12,9 +12,7 @@ from .models import Round, RoundEnrollment, RoundStatus, ScoreEvent, Submission
 from .round_locking import lock_round
 from .timing import utc_now
 from .question_reveal import ensure_question_snapshot
-
-QUESTION_SECONDS = 30
-QUESTION_COUNT = 23
+from .competition_rules import round_rules
 
 
 @dataclass(frozen=True)
@@ -40,12 +38,13 @@ async def reconcile_r1a(
     authoritative_now = now or utc_now()
     position = round_obj.current_position
     if (round_obj.status != RoundStatus.LIVE.value or not round_obj.question_started_at
-            or position is None or not 1 <= position <= QUESTION_COUNT):
+            or position is None or not 1 <= position <= round_rules(round_obj).r1a.question_count):
         if round_obj.status in ("ENDED", "PAUSED"):
             await ensure_question_snapshot(db, round_obj, authoritative_now)
         return ReconciliationResult(position, None)
 
-    deadline = round_obj.question_started_at + timedelta(seconds=QUESTION_SECONDS)
+    rules = round_rules(round_obj).r1a
+    deadline = round_obj.question_started_at + timedelta(milliseconds=rules.question_duration_ms)
     if authoritative_now < deadline:
         return ReconciliationResult(position, deadline)
 
@@ -58,7 +57,7 @@ async def reconcile_r1a(
         select(
             RoundEnrollment.team_id, literal("R1A"), literal(position),
             literal(None), literal(None), literal(deadline), literal(authoritative_now),
-            literal("UNANSWERED"), literal(0),
+            literal("UNANSWERED"), literal(rules.unanswered_score),
         ).where(RoundEnrollment.round_code == "R1A")
     ).on_conflict_do_nothing(constraint="uq_team_round_question").returning(
         Submission.id, Submission.team_id
@@ -67,14 +66,14 @@ async def reconcile_r1a(
     for submission_id, team_id in inserted_rows:
         db.add(ScoreEvent(
             team_id=team_id, round_code="R1A", submission_id=submission_id,
-            reason=f"R1A_Q{position}_UNANSWERED", points=0,
+            reason=f"R1A_Q{position}_UNANSWERED", points=rules.unanswered_score,
             created_at=authoritative_now,
         ))
 
     # Flush timeout score events before calculating the closed-question board.
     await ensure_question_snapshot(db, round_obj, authoritative_now)
 
-    ended = position == QUESTION_COUNT
+    ended = position == rules.question_count
     if ended:
         round_obj.status = RoundStatus.ENDED.value
         round_obj.ended_at = deadline

@@ -12,6 +12,7 @@ from .models import (Question, R1BDraft, Round, RoundStatus, ScoreEvent,
                      Submission, TeamRoundState)
 from .round_locking import lock_round
 from .scoring import numeric_correct
+from .competition_rules import round_rules
 from .timing import elapsed_ms, utc_now
 
 
@@ -73,7 +74,8 @@ async def finalize_expired_team(
         else:
             correct = numeric_correct(answer, question.correct_numeric,
                                       question.tolerance_abs, question.tolerance_rel)
-            result, points = (("CORRECT", 4000) if correct else ("WRONG", -1500))
+            rules = round_rules(round_obj).r1b
+            result, points = (("CORRECT", rules.correct_score) if correct else ("WRONG", rules.wrong_score))
             source = "TIMEOUT_DRAFT"
         submission_id = await db.scalar(insert(Submission).values(
             team_id=state.team_id, round_code="R1B", question_position=position,

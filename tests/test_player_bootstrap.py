@@ -99,6 +99,8 @@ async def test_r1a_bootstrap_lifecycle_and_lost_submit_response():
         assert response.status_code == 200, response.text
         data = response.json()
         assert data["contract_version"] == "1"
+        assert data["rules"]["r1a"]["question_count"] == 23
+        assert "correct_option_id" not in data["rules"]["r1a"]
         assert data["player_state"]["screen"] == screen
         assert data["identity"]["team_name"] == "Bootstrap Team"
         assert data["snapshot_version"] and data["snapshot_at"]

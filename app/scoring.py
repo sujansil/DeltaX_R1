@@ -1,20 +1,25 @@
 from decimal import Decimal, InvalidOperation
+from .competition_rules import R1ARules, configured_rules
 
-def r1a_points(elapsed_ms: int) -> int:
-    # Exact linear decay. 10s -> 1000, 25s -> 250.
-    # At/after 25s the score is held at the minimum 250 until timeout.
-    if elapsed_ms <= 10_000:
-        return 1000
-    if elapsed_ms >= 25_000:
-        return 250
-    # 50 points per second after 10s; use integer milliseconds to avoid float timing.
-    points = Decimal(1000) - (Decimal(elapsed_ms - 10_000) * Decimal(50) / Decimal(1000))
-    return max(250, int(points))
+def r1a_points(elapsed_ms: int, rules: R1ARules | None = None) -> int:
+    rules = rules or configured_rules().r1a
+    if elapsed_ms <= rules.full_score_until_ms:
+        return rules.maximum_correct_score
+    if elapsed_ms >= rules.decay_end_ms:
+        return rules.minimum_correct_score
+    # Derive the slope from endpoints. Decimal + int preserves truncation and ms handling.
+    score_range = Decimal(rules.maximum_correct_score - rules.minimum_correct_score)
+    decay_duration = Decimal(rules.decay_end_ms - rules.full_score_until_ms)
+    points = Decimal(rules.maximum_correct_score) - (
+        Decimal(elapsed_ms - rules.full_score_until_ms) * score_range / decay_duration
+    )
+    return max(rules.minimum_correct_score, int(points))
 
-def r1a_result(correct: bool | None, elapsed_ms: int) -> int:
+def r1a_result(correct: bool | None, elapsed_ms: int, rules: R1ARules | None = None) -> int:
+    rules = rules or configured_rules().r1a
     if correct is None:
-        return 0
-    return r1a_points(elapsed_ms) if correct else -500
+        return rules.unanswered_score
+    return r1a_points(elapsed_ms, rules) if correct else rules.wrong_answer_score
 
 def numeric_correct(answer: str | None, correct: Decimal | None, abs_tol: Decimal, rel_tol: Decimal) -> bool:
     if answer is None or correct is None:

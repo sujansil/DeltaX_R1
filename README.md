@@ -2,6 +2,28 @@
 
 Backend-first FastAPI implementation for Round 1(a) WizTime and Round 1(b) Math Rally.
 
+## Competition rules configuration
+
+Public game rules live in the single repository-root file `competition_rules.toml`.
+Edit that file and restart the application. No frontend rebuild is needed: player and
+admin pages receive effective public rules from the backend API. Environment
+configuration remains the home for database URLs, signing keys, media, session and
+security limits, heartbeat timing, infrastructure settings, and secrets.
+
+The checked-in file is an annotated example. Every `*_ms` value is integer
+milliseconds (`30000` is 30 seconds; `1680000` is 28 minutes), and scores are integer
+points. Increment the human-readable `version` when rules change. Invalid or missing
+configuration stops startup with a clear error. R1B currently supports exactly four
+turns because turns are coupled to four player/device slots and database authorization
+checks; other relay lengths are explicitly rejected.
+
+Rules are snapshotted onto a round in the same locked transaction that starts it.
+Edits therefore apply only to future round starts. Live, paused, ended, exported, and
+historical rounds keep their saved rules across edits and restarts. The migration
+backfills existing started/history rows with the former hardcoded defaults. Drafts use
+the current file when validated and started. An organiser's explicit R1B timer-mode
+selection is preserved; the configured default applies only if no mode was selected.
+
 ## Architecture
 
 - FastAPI: API layer

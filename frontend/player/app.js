@@ -94,7 +94,7 @@ async function render(id) {
         if (state.status !== "ENDED") later(id); return;
       }
       const data = await api("/api/r1a/question"); if (id !== generation) return;
-      $("content").replaceChildren(); node("h2", "Question " + data.position + " of 23"); countdown(data.remaining_ms, id);
+      $("content").replaceChildren(); node("h2", "Question " + data.position + " of " + state.rules.r1a.question_count); countdown(data.remaining_ms, id);
       activePosition = data.position;
       if (accepted.has(data.position)) { node("p", "Answer locked. Waiting for the next question…"); return; }
       node("p", data.question.text || "").className = "question-text"; image(data.question.image_url);
@@ -118,10 +118,10 @@ async function render(id) {
     } else if (view === "B") {
       const state = await api("/api/r1b/state"); if (id !== generation) return;
       $("content").replaceChildren(); node("h2", "Round 1(b) · Math Rally");
-      if (state.round_status === "PAUSED") { node("p", "The admin paused this round. Your team's 28-minute clock is frozen."); later(id); return; }
-      if (["FINISHED", "EXPIRED"].includes(state.turn_status)) { node("p", state.turn_status === "FINISHED" ? "All four turns are complete." : "Your team's time has expired."); return; }
+      if (state.round_status === "PAUSED") { node("p", "The admin paused this round. Your team's clock is frozen."); later(id); return; }
+      if (["FINISHED", "EXPIRED"].includes(state.turn_status)) { node("p", state.turn_status === "FINISHED" ? "All relay turns are complete." : "Your team's time has expired."); return; }
       if (state.turn_status === "NOT_STARTED") {
-        node("p", "Prepare your relay here. The 28-minute clock starts only when Player 1 presses READY.");
+        node("p", "Prepare your relay here. The team clock starts only when Player 1 presses READY.");
         button("Prepare relay", async () => { await api("/api/r1b/start", {}); await render(id); }); return;
       }
       if (state.turn_status === "WAITING") {
@@ -133,7 +133,7 @@ async function render(id) {
       }
       const data = await api("/api/r1b/question"); if (id !== generation) return;
       const restored = await api("/api/r1b/draft"); if (id !== generation || restored.turn_id !== data.turn_id) return;
-      countdown(data.remaining_ms, id); node("h3", "Player " + data.player_number + " · Question " + data.position + " of 4");
+      countdown(data.remaining_ms, id); node("h3", "Player " + data.player_number + " · Question " + data.position + " of " + state.rules.r1b.turn_count);
       node("p", data.question.text || "").className = "question-text"; image(data.question.image_url);
       const label = node("label", "Decimal answer"), input = node("input", undefined, label); input.inputMode = "decimal"; input.placeholder = "e.g. -12.75";
       input.value = restored.answer;

@@ -11,6 +11,7 @@ from sqlalchemy import case, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import LeaderboardSnapshot, RoundEnrollment, ScoreEvent, Submission, Team
+from .competition_rules import round_rules
 
 KIND = "R1A_QUESTION_REVEAL_V1"
 
@@ -23,7 +24,7 @@ def closed_position(round_obj, now) -> int:
     if round_obj.status == "ENDED":
         # Early End closes access but preserves already accepted scores.
         return position
-    deadline = (round_obj.question_started_at + timedelta(seconds=30)
+    deadline = (round_obj.question_started_at + timedelta(milliseconds=round_rules(round_obj).r1a.question_duration_ms)
                 if round_obj.question_started_at else None)
     reference = round_obj.paused_at if round_obj.status == "PAUSED" else now
     if deadline is not None and reference is not None and reference >= deadline:
@@ -35,7 +36,7 @@ def natural_close(round_obj, now):
     """Return the current effective deadline only once it really elapsed."""
     if not round_obj.current_position or not round_obj.question_started_at:
         return None
-    deadline = round_obj.question_started_at + timedelta(seconds=30)
+    deadline = round_obj.question_started_at + timedelta(milliseconds=round_rules(round_obj).r1a.question_duration_ms)
     reference = (round_obj.paused_at if round_obj.status == "PAUSED" else
                  round_obj.ended_at if round_obj.status == "ENDED" else now)
     if round_obj.status == "DRAFT" or reference is None or reference < deadline:

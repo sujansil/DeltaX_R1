@@ -17,11 +17,12 @@ from ..dependencies import require_player
 from ..models import (PlayerDevice, Question, QuestionOption, R1BDraft, Round,
                       RoundStatus, ScoreEvent, Submission, Team, TeamRoundState)
 from ..player_sessions import authorize_session
-from ..r1a_reconciliation import QUESTION_COUNT as R1A_COUNT, reconcile_r1a
+from ..r1a_reconciliation import reconcile_r1a
 from ..r1b_finalization import effective_remaining_ms, finalize_expired_team
 from ..round_locking import lock_round
 from ..timing import remaining_ms, utc_now
 from ..question_reveal import closed_position, visible_total, read_leaderboard
+from ..competition_rules import round_rules
 
 router = APIRouter(prefix="/api/player", tags=["player-bootstrap"])
 settings = get_settings()
@@ -120,6 +121,7 @@ class BootstrapOut(BaseModel):
     snapshot_at: datetime
     identity: IdentityOut
     round: RoundOut
+    rules: dict
     player_state: PlayerStateOut
     timer: TimerOut
     question: QuestionOut | None = None
@@ -155,7 +157,8 @@ async def _reconcile_if_due(db: AsyncSession, user: dict) -> None:
         due = bool(
             round_obj and round_obj.status == RoundStatus.LIVE.value
             and round_obj.question_started_at
-            and now >= round_obj.question_started_at + timedelta(seconds=30)
+            and now >= round_obj.question_started_at + timedelta(
+                milliseconds=round_rules(round_obj).r1a.question_duration_ms)
         )
         await db.rollback()
         if due:
@@ -249,6 +252,7 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
     if not round_obj:
         raise coded_error(409, "ROUND_NOT_CONFIGURED", "The session round is not configured")
     now = utc_now()
+    rules = round_rules(round_obj)
 
     identity = IdentityOut(
         team_id=team.id, team_code=team.code, team_name=team.name,
@@ -263,7 +267,7 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
 
     if device.round_code == "R1A":
         position = round_obj.current_position
-        deadline = (round_obj.question_started_at + timedelta(seconds=30)
+        deadline = (round_obj.question_started_at + timedelta(milliseconds=rules.r1a.question_duration_ms)
                     if round_obj.question_started_at and position else None)
         active = bool(round_obj.status == "LIVE" and deadline and now < deadline)
         paused_active = bool(round_obj.status == "PAUSED" and deadline and round_obj.paused_at
@@ -318,7 +322,7 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
         actions = []
         if not state:
             turn_status, current_player, position = "NOT_STARTED", 1, 1
-            remaining = 28 * 60 * 1000
+            remaining = rules.r1b.total_answering_budget_ms
             running = False
             screen = "ENDED" if round_obj.status == "ENDED" else "NOT_STARTED"
             if round_obj.status == "LIVE" and device.player_number == 1:
@@ -399,7 +403,7 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
     version_parts.extend([score_total, leaderboard_out.get("publication_id")])
     response = BootstrapOut(
         snapshot_version=_snapshot_version(version_parts), snapshot_at=now,
-        identity=identity, round=round_out, player_state=player_state,
+        identity=identity, round=round_out, rules=rules.public_dict(), player_state=player_state,
         timer=timer, question=question, own_outcome=outcome,
         draft=draft_out if device.round_code == "R1B" else None,
         available_actions=actions, score_total=score_total, leaderboard=leaderboard_out,

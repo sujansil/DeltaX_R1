@@ -16,13 +16,9 @@ from ..timing import elapsed_ms, utc_now
 from ..round_locking import lock_round
 from ..player_sessions import authorize_session
 from ..r1b_finalization import effective_remaining_ms, finalize_expired_team
+from ..competition_rules import round_rules
 
 router = APIRouter(prefix="/api/r1b", tags=["round-1b"])
-ROUND_MINUTES = 28
-BUDGET_MS = ROUND_MINUTES * 60 * 1000
-QUESTION_COUNT = 4
-
-
 class SubmitNumeric(BaseModel):
     answer: str | None = None
     skip: bool = False
@@ -45,11 +41,12 @@ async def require_live_round(db: AsyncSession, allow_paused: bool = False, *, lo
     return round_obj
 
 
-async def locked_state(db: AsyncSession, team_id: int):
+async def locked_state(db: AsyncSession, team_id: int, round_obj: Round):
+    budget_ms = round_rules(round_obj).r1b.total_answering_budget_ms
     await db.execute(insert(TeamRoundState).values(
         team_id=team_id, round_code="R1B", current_player=1,
         current_question_position=1, turn_status="NOT_STARTED",
-        remaining_time_ms=BUDGET_MS,
+        remaining_time_ms=budget_ms,
     ).on_conflict_do_nothing(constraint="uq_team_round"))
     return (await db.execute(select(TeamRoundState).where(
         TeamRoundState.team_id == team_id, TeamRoundState.round_code == "R1B"
@@ -85,6 +82,7 @@ def serialize_state(state: TeamRoundState, round_obj: Round, now):
         and state.turn_status not in ("FINISHED", "EXPIRED")
     )
     return {
+        "rules": round_rules(round_obj).public_dict(),
         "round_status": round_obj.status,
         "timer_mode": round_obj.r1b_timer_mode,
         "current_player": state.current_player,
@@ -110,7 +108,7 @@ async def state(user=Depends(require_player), db: AsyncSession = Depends(get_db)
     if user.get("sid"):
         await authorize_session(db, user, "R1B")
     async with db.begin_nested():
-        team_state = await locked_state(db, user["team_id"])
+        team_state = await locked_state(db, user["team_id"], round_obj)
         now = utc_now()
         await finalize_expired_team(db, round_obj, team_state, now)
     await db.commit()
@@ -123,14 +121,14 @@ async def start_team(user=Depends(require_player), db: AsyncSession = Depends(ge
     if user.get("sid"):
         await authorize_session(db, user, "R1B", lock=True)
     async with db.begin_nested():
-        team_state = await locked_state(db, user["team_id"])
+        team_state = await locked_state(db, user["team_id"], round_obj)
         require_turn_slot(user, team_state)
         if team_state.team_started_at:
             response = {"ok": True, "already_started": True}
         else:
             now = utc_now()
             team_state.team_started_at = now
-            team_state.remaining_time_ms = BUDGET_MS
+            team_state.remaining_time_ms = round_rules(round_obj).r1b.total_answering_budget_ms
             team_state.clock_started_at = None
             team_state.clock_running_since = None
             team_state.team_deadline = None
@@ -150,7 +148,7 @@ async def ready(user=Depends(require_player), db: AsyncSession = Depends(get_db)
         await authorize_session(db, user, "R1B", lock=True)
     expired = False
     async with db.begin_nested():
-        team_state = await locked_state(db, user["team_id"])
+        team_state = await locked_state(db, user["team_id"], round_obj)
         require_turn_slot(user, team_state)
         now = utc_now()
         if team_state.turn_status != "WAITING":
@@ -212,7 +210,7 @@ async def get_draft(user=Depends(require_player), db: AsyncSession = Depends(get
     round_obj = await require_live_round(db, allow_paused=True, locked=True)
     if user.get("sid"):
         await authorize_session(db, user, "R1B", lock=True)
-    team_state = await locked_state(db, user["team_id"])
+    team_state = await locked_state(db, user["team_id"], round_obj)
     require_turn_slot(user, team_state)
     now = utc_now()
     await finalize_expired_team(db, round_obj, team_state, now)
@@ -241,7 +239,7 @@ async def save_draft(data: SaveDraft, user=Depends(require_player),
     round_obj = await require_live_round(db, locked=True)
     if user.get("sid"):
         await authorize_session(db, user, "R1B", lock=True)
-    team_state = await locked_state(db, user["team_id"])
+    team_state = await locked_state(db, user["team_id"], round_obj)
     require_turn_slot(user, team_state)
     now = utc_now()
     if (await finalize_expired_team(db, round_obj, team_state, now)).expired:
@@ -278,7 +276,7 @@ async def submit(data: SubmitNumeric, user=Depends(require_player), db: AsyncSes
     expired = False
     response = None
     async with db.begin_nested():
-        team_state = await locked_state(db, user["team_id"])
+        team_state = await locked_state(db, user["team_id"], round_obj)
         require_turn_slot(user, team_state)
         now = utc_now()
         if team_state.turn_status != "ACTIVE":
@@ -296,11 +294,13 @@ async def submit(data: SubmitNumeric, user=Depends(require_player), db: AsyncSes
                 raise HTTPException(503, "The current question is not configured")
 
             if data.skip:
-                result, points = "SKIPPED", 0
+                result, points = "SKIPPED", round_rules(round_obj).r1b.skip_unanswered_score
             else:
                 correct = numeric_correct(data.answer, q.correct_numeric,
                                           q.tolerance_abs, q.tolerance_rel)
-                result, points = ("CORRECT", 4000) if correct else ("WRONG", -1500)
+                rules = round_rules(round_obj).r1b
+                result, points = (("CORRECT", rules.correct_score)
+                                  if correct else ("WRONG", rules.wrong_score))
             submission_id = (await db.execute(insert(Submission).values(
                 team_id=user["team_id"], round_code="R1B", question_position=position,
                 player_number=team_state.current_player, answer_text=data.answer,
@@ -317,7 +317,7 @@ async def submit(data: SubmitNumeric, user=Depends(require_player), db: AsyncSes
                               submission_id=submission_id,
                               reason=f"R1B_Q{position}_{result}", points=points))
 
-            if position >= QUESTION_COUNT:
+            if position >= round_rules(round_obj).r1b.turn_count:
                 team_state.turn_status = "FINISHED"
                 team_state.finished_at = now
                 next_player = None

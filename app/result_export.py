@@ -14,7 +14,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (Admin, AdminAction, LeaderboardSnapshot, QuestionOption,
-                     RoundEnrollment, ScoreEvent, Submission, Team)
+                     Round, RoundEnrollment, ScoreEvent, Submission, Team)
 from .timing import utc_now
 
 APP_VERSION = "1.0.0"
@@ -46,6 +46,8 @@ async def build_results_workbook(db: AsyncSession, scope: str) -> tuple[bytes, d
     rounds = ["R1A", "R1B"] if scope == "BOTH" else [scope]
     exported_at = utc_now()
     revision = await db.scalar(text("SELECT version_num FROM alembic_version"))
+    round_rows = (await db.scalars(select(Round).where(Round.code.in_(rounds))
+                                  .order_by(Round.code))).all()
 
     teams = (await db.scalars(select(Team).order_by(Team.code))).all()
     totals_rows = (await db.execute(select(
@@ -79,6 +81,9 @@ async def build_results_workbook(db: AsyncSession, scope: str) -> tuple[bytes, d
         ("Score semantics", "Team Results are current calculated ScoreEvent totals; Published Snapshots are immutable historical publications"),
     ):
         _row(metadata, [key, value], text_columns=(0, 1))
+    for round_obj in round_rows:
+        _row(metadata, [f"{round_obj.code} rules version", round_obj.rules_version or "draft/not snapshotted"], text_columns=(0, 1))
+        _row(metadata, [f"{round_obj.code} effective rules JSON", round_obj.rules_snapshot or ""], text_columns=(0, 1))
 
     team_headers = ["Team ID", "Team Code", "Team Name"]
     if "R1A" in rounds: team_headers.append("Current R1A Total")

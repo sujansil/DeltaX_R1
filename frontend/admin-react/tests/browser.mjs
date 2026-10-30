@@ -59,8 +59,8 @@ let checks = 0,
   expired = false,
   nextQ = 2;
 let rounds = [
-  { code: "R1A", status: "DRAFT", position: 0, question_active: false },
-  { code: "R1B", status: "DRAFT", timer_mode: "CONTINUOUS" },
+  { code: "R1A", status: "DRAFT", position: 0, question_active: false, rules: {r1a:{question_count:23,question_duration_ms:30000}} },
+  { code: "R1B", status: "DRAFT", timer_mode: "CONTINUOUS", rules: {r1b:{turn_count:4,total_answering_budget_ms:1680000}} },
 ];
 let teams = [
   {
