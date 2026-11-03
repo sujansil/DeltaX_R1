@@ -276,6 +276,8 @@ async def resume_round(data: RoundAction, user=Depends(require_admin), db: Async
         raise HTTPException(409, "Only a paused round can be resumed")
     now = utc_now()
     paused_for = now - r.paused_at
+    if r.code == "R1A" and r.r1a_result_due_at:
+        r.r1a_result_due_at += paused_for
     # Shift R1A only if it was still active when pause acquired its lock.
     # A pause after the deadline must not resurrect an expired question.
     if (r.code == "R1A" and r.question_started_at
@@ -311,6 +313,8 @@ async def next_question(data: NextQuestion, user=Depends(require_admin), db: Asy
     if not r:
         raise HTTPException(409, "Start Round 1(a) first")
     now = utc_now()
+    if round_rules(r).r1a.advance_mode == "AUTO":
+        raise HTTPException(409, "Next Question is disabled while R1A automatic advancement is enabled")
     if r.status == RoundStatus.LIVE.value:
         await reconcile_r1a(db, now=now, locked_round=r)
     if r.status != RoundStatus.LIVE.value:
@@ -380,6 +384,9 @@ async def dashboard(r1b_offset: int = Query(0, ge=0), r1b_limit: int = Query(100
          "timer_mode": r.r1b_timer_mode if r.code == "R1B" else None,
          "question_active": position_at(r, now) is not None if r.code == "R1A" else False,
          "question_deadline": r.question_started_at + timedelta(milliseconds=round_rules(r).r1a.question_duration_ms) if r.question_started_at else None,
+         "r1a_phase": ("RESULT" if r.code == "R1A" and r.r1a_result_due_at else
+                       "QUESTION" if r.code == "R1A" and position_at(r, now) is not None else None),
+         "next_reveal_at": r.r1a_result_due_at if r.code == "R1A" else None,
          "rules": round_rules(r).public_dict(),
          "paused_at": r.paused_at}
         for r in rounds],
@@ -948,6 +955,7 @@ async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
         round_obj.current_position = None
         round_obj.question_started_at = None
         round_obj.paused_at = None
+        round_obj.r1a_result_due_at = None
         round_obj.rules_version = None
         round_obj.rules_snapshot = None
 

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Round, RoundEnrollment, RoundStatus, ScoreEvent, Submission
+from .models import AdminAction, Question, Round, RoundEnrollment, RoundStatus, ScoreEvent, Submission
 from .round_locking import lock_round
 from .timing import utc_now
 from .question_reveal import ensure_question_snapshot
@@ -21,6 +21,7 @@ class ReconciliationResult:
     deadline: datetime | None
     inserted: int = 0
     round_ended: bool = False
+    advanced: bool = False
 
 
 async def reconcile_r1a(
@@ -48,6 +49,24 @@ async def reconcile_r1a(
     if authoritative_now < deadline:
         return ReconciliationResult(position, deadline)
 
+    # Once publication has established the result interval, a later pass owns
+    # only the single next reveal. The new question always gets a fresh window.
+    if rules.advance_mode == "AUTO" and round_obj.r1a_result_due_at is not None:
+        if authoritative_now < round_obj.r1a_result_due_at:
+            return ReconciliationResult(position, deadline)
+        next_position = position + 1
+        question = await db.scalar(select(Question).where(
+            Question.round_code == "R1A", Question.position == next_position,
+            Question.enabled.is_(True)))
+        if not question or question.correct_option_id is None:
+            raise RuntimeError(f"R1A question {next_position} is not configured")
+        round_obj.current_position = next_position
+        round_obj.question_started_at = authoritative_now
+        round_obj.r1a_result_due_at = None
+        db.add(AdminAction(admin_id=None, action="AUTO_REVEAL_R1A_QUESTION",
+                           details=f"position={next_position};source=SYSTEM"))
+        return ReconciliationResult(next_position, None, advanced=True)
+
     # The roster is the start-time snapshot, never current sessions/team status.
     # Explicit literals avoid treating INSERT..SELECT values as column names.
     from sqlalchemy import literal
@@ -71,11 +90,29 @@ async def reconcile_r1a(
         ))
 
     # Flush timeout score events before calculating the closed-question board.
-    await ensure_question_snapshot(db, round_obj, authoritative_now)
+    snapshot = await ensure_question_snapshot(db, round_obj, authoritative_now)
 
     ended = position == rules.question_count
     if ended:
         round_obj.status = RoundStatus.ENDED.value
         round_obj.ended_at = deadline
+
+    elif rules.advance_mode == "AUTO" and snapshot is not None:
+        # Anchor to finalized publication time, not the question deadline.
+        round_obj.r1a_result_due_at = authoritative_now + timedelta(
+            milliseconds=rules.auto_advance_delay_ms)
+        if rules.auto_advance_delay_ms == 0:
+            next_position = position + 1
+            question = await db.scalar(select(Question).where(
+                Question.round_code == "R1A", Question.position == next_position,
+                Question.enabled.is_(True)))
+            if not question or question.correct_option_id is None:
+                raise RuntimeError(f"R1A question {next_position} is not configured")
+            round_obj.current_position = next_position
+            round_obj.question_started_at = authoritative_now
+            round_obj.r1a_result_due_at = None
+            db.add(AdminAction(admin_id=None, action="AUTO_REVEAL_R1A_QUESTION",
+                               details=f"position={next_position};source=SYSTEM"))
+            return ReconciliationResult(next_position, None, len(inserted_rows), advanced=True)
 
     return ReconciliationResult(position, deadline, len(inserted_rows), ended)

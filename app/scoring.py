@@ -3,6 +3,8 @@ from .competition_rules import R1ARules, configured_rules
 
 def r1a_points(elapsed_ms: int, rules: R1ARules | None = None) -> int:
     rules = rules or configured_rules().r1a
+    if not rules.decay_enabled:
+        return rules.maximum_correct_score
     if elapsed_ms <= rules.full_score_until_ms:
         return rules.maximum_correct_score
     if elapsed_ms >= rules.decay_end_ms:

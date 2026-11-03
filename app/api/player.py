@@ -129,6 +129,7 @@ class BootstrapOut(BaseModel):
     draft: DraftOut | None = None
     score_total: int = 0
     leaderboard: dict | None = None
+    r1a_phase: dict | None = None
     available_actions: list[Literal["START", "READY", "SUBMIT", "SKIP", "SAVE_DRAFT"]]
 
 
@@ -284,6 +285,8 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
             screen = "NOT_STARTED"
         elif round_obj.status == "ENDED":
             screen = "ENDED"
+        elif round_obj.status == "PAUSED" and round_obj.r1a_result_due_at:
+            screen = "BETWEEN_QUESTIONS"
         elif round_obj.status == "PAUSED":
             screen = "PAUSED"
         elif active and submission:
@@ -306,7 +309,7 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
                          remaining_ms=timer_remaining,
                          deadline=deadline if active else None)
         version_parts = [round_obj.status, position, round_obj.question_started_at,
-                         round_obj.paused_at, round_obj.ended_at,
+                         round_obj.paused_at, round_obj.ended_at, round_obj.r1a_result_due_at,
                          submission.id if submission else None,
                          submission.recorded_at if submission else None]
     else:
@@ -407,6 +410,15 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
         timer=timer, question=question, own_outcome=outcome,
         draft=draft_out if device.round_code == "R1B" else None,
         available_actions=actions, score_total=score_total, leaderboard=leaderboard_out,
+        r1a_phase=({
+            "phase": "RESULT" if round_obj.r1a_result_due_at else
+                     "QUESTION" if active else "IDLE",
+            "next_reveal_at": round_obj.r1a_result_due_at,
+            "remaining_ms": remaining_ms(round_obj.r1a_result_due_at,
+                                           round_obj.paused_at if round_obj.status == "PAUSED" else now)
+                            if round_obj.r1a_result_due_at else 0,
+            "frozen": bool(round_obj.r1a_result_due_at and round_obj.status == "PAUSED"),
+        } if device.round_code == "R1A" else None),
     )
     await db.commit()
     return response

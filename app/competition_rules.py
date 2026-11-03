@@ -11,6 +11,7 @@ import tomllib
 RULES_PATH = Path(__file__).resolve().parent.parent / "competition_rules.toml"
 SUPPORTED_TIMER_MODES = {"CONTINUOUS", "PAUSE_DURING_HANDOVER"}
 SUPPORTED_R1B_TURN_COUNT = 4  # coupled to player slots and DB constraints
+SUPPORTED_R1A_ADVANCE_MODES = {"MANUAL", "AUTO"}
 
 
 class CompetitionRulesError(RuntimeError):
@@ -19,6 +20,9 @@ class CompetitionRulesError(RuntimeError):
 
 @dataclass(frozen=True)
 class R1ARules:
+    advance_mode: str
+    auto_advance_delay_ms: int
+    decay_enabled: bool
     question_count: int
     question_duration_ms: int
     full_score_until_ms: int
@@ -59,12 +63,23 @@ def _integer(section: dict, name: str) -> int:
     return value
 
 
+def _boolean(section: dict, name: str) -> bool:
+    value = section.get(name)
+    if not isinstance(value, bool):
+        raise CompetitionRulesError(f"competition_rules.toml: {name} must be a boolean")
+    return value
+
+
 def _validate(rules: CompetitionRules) -> None:
     a, b = rules.r1a, rules.r1b
     if not rules.version.strip():
         raise CompetitionRulesError("competition_rules.toml: version must be non-empty")
     if a.question_count <= 0 or a.question_duration_ms <= 0:
         raise CompetitionRulesError("competition_rules.toml: R1A question count and duration must be positive")
+    if a.advance_mode not in SUPPORTED_R1A_ADVANCE_MODES:
+        raise CompetitionRulesError("competition_rules.toml: r1a.advance_mode must be MANUAL or AUTO")
+    if a.auto_advance_delay_ms < 0:
+        raise CompetitionRulesError("competition_rules.toml: r1a.auto_advance_delay_ms must be nonnegative")
     if not 0 <= a.full_score_until_ms < a.decay_end_ms <= a.question_duration_ms:
         raise CompetitionRulesError("competition_rules.toml: require 0 <= full_score_until_ms < decay_end_ms <= question_duration_ms")
     if not a.maximum_correct_score >= a.minimum_correct_score >= 0:
@@ -86,9 +101,19 @@ def _validate(rules: CompetitionRules) -> None:
 def rules_from_dict(data: dict) -> CompetitionRules:
     try:
         a, b = data["r1a"], data["r1b"]
+        # Snapshots written before these controls existed deliberately retain
+        # the historical manual/decaying behaviour.
+        a = {"advance_mode": "MANUAL", "auto_advance_delay_ms": 8000,
+             "decay_enabled": True, **a}
         rules = CompetitionRules(
             version=str(data["version"]),
-            r1a=R1ARules(**{name: _integer(a, name) for name in R1ARules.__annotations__}),
+            r1a=R1ARules(
+                advance_mode=str(a["advance_mode"]),
+                auto_advance_delay_ms=_integer(a, "auto_advance_delay_ms"),
+                decay_enabled=_boolean(a, "decay_enabled"),
+                **{name: _integer(a, name) for name in R1ARules.__annotations__
+                   if name not in {"advance_mode", "auto_advance_delay_ms", "decay_enabled"}},
+            ),
             r1b=R1BRules(**{
                 **{name: _integer(b, name) for name in R1BRules.__annotations__ if name != "default_timer_mode"},
                 "default_timer_mode": str(b["default_timer_mode"]),

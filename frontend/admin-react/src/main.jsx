@@ -553,9 +553,15 @@ function Overview() {
                         </div>
                         {code === "R1A" && (
                           <div className="next-question">
+                            <small>
+                              {round.rules.r1a.advance_mode === "AUTO"
+                                ? `Automatic mode${round.next_reveal_at ? ` · next reveal ${new Date(round.next_reveal_at).toLocaleTimeString()}` : ""}`
+                                : "Manual mode"}
+                            </small>
                             <BusyButton
-                              label={`${(round.position || 0) >= round.rules.r1a.question_count ? "All questions revealed" : "Reveal question " + ((round.position || 0) + 1)}`}
+                              label={`${round.rules.r1a.advance_mode === "AUTO" ? "Next question is automatic" : (round.position || 0) >= round.rules.r1a.question_count ? "All questions revealed" : "Reveal question " + ((round.position || 0) + 1)}`}
                               disabled={
+                                round.rules.r1a.advance_mode === "AUTO" ||
                                 round.status !== "LIVE" ||
                                 round.question_active ||
                                 (round.position || 0) >= round.rules.r1a.question_count
@@ -581,8 +587,9 @@ function Overview() {
                               }
                             />
                             <small>
-                              Questions 2–{round.rules.r1a.question_count} are revealed manually after the
-                              previous window closes.
+                              {round.rules.r1a.advance_mode === "AUTO"
+                                ? `Each finalized leaderboard remains visible for ${round.rules.r1a.auto_advance_delay_ms / 1000} seconds.`
+                                : `Questions 2–${round.rules.r1a.question_count} are revealed manually after the previous window closes.`}
                             </small>
                           </div>
                         )}

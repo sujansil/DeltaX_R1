@@ -79,7 +79,7 @@ function Question({state,left,request,mutate,busy,onError}) {
 const screenCopy={
  NOT_STARTED:['Before the first move.','Waiting for the organisers to open your round.'],
  ACTIVE_ACCEPTED:['Answer locked.','Your answer is safely recorded. Results appear when this question closes.'],
- BETWEEN_QUESTIONS:['A moment between moves.','The next question appears when the organiser reveals it.'],
+ BETWEEN_QUESTIONS:['A moment between moves.','The finalized leaderboard stays on screen until the next question opens.'],
  WAITING_TURN:['Your moment is coming.','Another player has the active turn. Keep this page open.'],
  HANDOVER_READY:['Take your place.','Your question stays hidden until you are ready.'],
  PAUSED:['A pause in the pattern.','The organiser has paused this round. Your clock is frozen.'],
@@ -109,7 +109,7 @@ function QuestionLeaderboard({state}) {
    {board.mine&&!board.data.some(row=>row.team_id===state.identity.team_id)&&<div className="own-standing"><span>Your team · #{board.mine.rank}</span><strong>{formatScore(board.mine.score)} pts</strong></div>}
    <p className="micro-copy">{board.data.length>5?'Scroll inside the table to see lower ranks. ':''}{board.total_teams>16?'Top 16 shown. ':board.data.length?`All ${board.data.length} ranked teams shown. `:''}Updated automatically when the question closes.</p>
   </>}
-  <p className="next-question-note">{state.round.status==='ENDED'?'WizTime is complete. Your recorded results are saved.':'The next question opens when the organiser reveals it.'}</p>
+  <p className="next-question-note">{state.round.status==='ENDED'?'WizTime is complete. Your recorded results are saved.':state.rules.r1a.advance_mode==='AUTO'?(state.r1a_phase?.frozen?'Automatic reveal is frozen while the round is paused.':`The next question opens automatically${state.r1a_phase?.remaining_ms>0?` in ${Math.ceil(state.r1a_phase.remaining_ms/1000)} seconds`:''}.`):'The next question opens when the organiser reveals it.'}</p>
  </section>;
 }
 function Confirm({title,text,onCancel,onConfirm}){const cancel=useRef(null);useEffect(()=>{cancel.current?.focus();const fn=e=>{if(e.key==='Escape')onCancel();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn)},[]);

@@ -30,6 +30,24 @@ def test_non_default_r1a_boundaries_and_derived_decay():
     assert r1a_result(None, 1, rules) == 0
 
 
+def test_disabled_decay_always_awards_maximum_before_deadline():
+    data = configured().public_dict()
+    data["r1a"]["decay_enabled"] = False
+    rules = rules_from_dict(data).r1a
+    assert r1a_points(0, rules) == 800
+    assert r1a_points(14_999, rules) == 800
+    assert r1a_points(20_000, rules) == 800
+
+
+def test_legacy_snapshot_defaults_to_manual_decay():
+    data = configured().public_dict()
+    for key in ("advance_mode", "auto_advance_delay_ms", "decay_enabled"):
+        data["r1a"].pop(key)
+    rules = rules_from_dict(data).r1a
+    assert rules.advance_mode == "MANUAL"
+    assert rules.decay_enabled is True
+
+
 def test_snapshot_round_trip_and_public_contract():
     rules = configured()
     assert rules_from_dict(json.loads(rules.snapshot_json())) == rules

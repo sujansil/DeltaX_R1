@@ -98,6 +98,7 @@ class Round(Base):
     current_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
     question_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    r1a_result_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     r1b_timer_mode: Mapped[str] = mapped_column(
         String(32), default=R1BTimerMode.CONTINUOUS.value,
         server_default=R1BTimerMode.CONTINUOUS.value,
