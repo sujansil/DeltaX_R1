@@ -32,6 +32,8 @@ async def reset_data():
 
 
 async def seed_r1a(*, expired=False):
+    from dataclasses import replace
+    from app.competition_rules import configured_rules
     from app.db import SessionLocal
     from app.models import Question, QuestionOption, Round, Team
     from app.timing import utc_now
@@ -51,8 +53,11 @@ async def seed_r1a(*, expired=False):
             question.correct_option_id = option.id
             option_ids.append(option.id)
         now = utc_now()
+        rules = configured_rules()
+        rules = replace(rules, r1a=replace(rules.r1a, advance_mode="MANUAL"))
         db.add(Round(code="R1A", status="LIVE", started_at=now,
                      current_position=1,
+                     rules_version=rules.version, rules_snapshot=rules.snapshot_json(),
                      question_started_at=now - timedelta(seconds=31 if expired else 0)))
         await db.commit()
         return team.id, option_ids
@@ -300,7 +305,7 @@ async def test_duplicate_submit_and_ready_are_serialized():
     assert sum(isinstance(result, HTTPException) and result.status_code == 409 for result in results) == 1
 
 
-async def test_r1a_deadline_is_checked_after_lock_wait():
+async def test_r1a_deadline_uses_receipt_before_lock_wait():
     require_disposable_test_database()
     from app.api import r1a
     from app.db import SessionLocal
@@ -321,10 +326,10 @@ async def test_r1a_deadline_is_checked_after_lock_wait():
         await assert_waiting(player)
         await asyncio.sleep(0.2)
         await blocker.commit()
-        with pytest.raises(HTTPException) as rejected:
-            await asyncio.wait_for(player, TIMEOUT)
-        assert rejected.value.status_code == 409
-    assert await counts("R1A") == (0, 0)
+        result = await asyncio.wait_for(player, TIMEOUT)
+        assert result["accepted"] is True
+        assert result["elapsed_ms"] < 30_000
+    assert await counts("R1A") == (1, 1)
 
 
 @pytest.mark.parametrize("action", ["ready", "submit"])

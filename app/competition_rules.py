@@ -80,7 +80,7 @@ def _validate(rules: CompetitionRules) -> None:
         raise CompetitionRulesError("competition_rules.toml: r1a.advance_mode must be MANUAL or AUTO")
     if a.auto_advance_delay_ms < 0:
         raise CompetitionRulesError("competition_rules.toml: r1a.auto_advance_delay_ms must be nonnegative")
-    if not 0 <= a.full_score_until_ms < a.decay_end_ms <= a.question_duration_ms:
+    if a.decay_enabled and not 0 <= a.full_score_until_ms < a.decay_end_ms <= a.question_duration_ms:
         raise CompetitionRulesError("competition_rules.toml: require 0 <= full_score_until_ms < decay_end_ms <= question_duration_ms")
     if not a.maximum_correct_score >= a.minimum_correct_score >= 0:
         raise CompetitionRulesError("competition_rules.toml: require maximum_correct_score >= minimum_correct_score >= 0")

@@ -26,6 +26,8 @@ def test_manual_question_clock():
 @pytest.mark.database
 @pytest.mark.skipif(os.getenv("RUN_DB_TESTS") != "1", reason="requires migrated PostgreSQL")
 async def test_manual_flow_and_admin_audit():
+    from dataclasses import replace
+    from app.competition_rules import configured_rules
     require_disposable_test_database()
     from app.main import app
     from app.db import engine, get_db
@@ -42,7 +44,10 @@ async def test_manual_flow_and_admin_audit():
             team = Team(code="TEST-MANUAL-AUDIT", name="Manual test", login_username="test-manual-audit")
             db.add(team)
             await db.flush()
-            r = Round(code="R1A")
+            rules = configured_rules()
+            rules = replace(rules, r1a=replace(rules.r1a, advance_mode="MANUAL"))
+            r = Round(code="R1A", rules_version=rules.version,
+                      rules_snapshot=rules.snapshot_json())
             db.add(r)
             for position in (1, 2):
                 question = Question(round_code="R1A", position=position, answer_type="MCQ")

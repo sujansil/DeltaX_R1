@@ -164,6 +164,7 @@ async def test_reset_clears_state_preserves_configuration_and_revokes_tokens(mon
             {"sub": "reset-admin"}, db)
         assert result["affected_records"] == {
             "player_sessions_revoked": 1, "score_events": 1, "submissions": 1,
+            "r1a_receipts": 0,
             "numerical_drafts": 1, "relay_team_states": 1, "enrolments": 1,
             "leaderboard_snapshots": 1,
         }

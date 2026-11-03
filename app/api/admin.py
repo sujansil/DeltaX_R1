@@ -324,8 +324,10 @@ async def next_question(data: NextQuestion, user=Depends(require_admin), db: Asy
         raise HTTPException(409, "Another admin advanced the question. Refresh the dashboard.")
     rules = round_rules(r).r1a
     if r.current_position == rules.question_count:
+        await db.commit()
         raise HTTPException(409, f"All {rules.question_count} questions have been revealed")
     if r.question_started_at and now < r.question_started_at + timedelta(milliseconds=rules.question_duration_ms):
+        await db.commit()
         raise HTTPException(409, "Wait for the current question timer to finish")
     position = (r.current_position or 0) + 1
     q = await db.scalar(select(Question).where(Question.round_code == "R1A",
@@ -938,6 +940,7 @@ async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
     counts = {"player_sessions_revoked": session_result.rowcount}
     for key, model in (
         ("score_events", ScoreEvent),
+        ("r1a_receipts", R1AReceipt),
         ("submissions", Submission),
         ("numerical_drafts", R1BDraft),
         ("relay_team_states", TeamRoundState),

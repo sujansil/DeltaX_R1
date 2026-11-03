@@ -12,6 +12,7 @@ from .config import get_settings
 from .db import SessionLocal
 from .r1a_reconciliation import reconcile_r1a
 from .r1b_finalization import reconcile_r1b_batch
+from .request_timing import R1AReceiptTimingMiddleware
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+app.add_middleware(R1AReceiptTimingMiddleware)
 
 Path(settings.media_root).mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=settings.media_root), name="media")

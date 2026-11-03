@@ -212,6 +212,27 @@ class Submission(Base):
     points: Mapped[int] = mapped_column(Integer, default=0)
     __table_args__ = (UniqueConstraint("team_id", "round_code", "question_position", name="uq_team_round_question"),)
 
+class R1AReceipt(Base):
+    """Durable handoff between HTTP admission and R1A scoring/finalization."""
+    __tablename__ = "r1a_receipts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    option_id: Mapped[int] = mapped_column(ForeignKey("question_options.id", ondelete="CASCADE"))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    question_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    question_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    question_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", server_default="PENDING")
+    submission_id: Mapped[int | None] = mapped_column(
+        ForeignKey("submissions.id", ondelete="SET NULL"), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejection_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    __table_args__ = (
+        CheckConstraint("status IN ('PENDING', 'ACCEPTED', 'REJECTED')", name="ck_r1a_receipt_status"),
+        Index("ix_r1a_receipts_pending_time", "received_at", postgresql_where=status == "PENDING"),
+    )
+
 class ScoreEvent(Base):
     __tablename__ = "score_events"
     id: Mapped[int] = mapped_column(primary_key=True)

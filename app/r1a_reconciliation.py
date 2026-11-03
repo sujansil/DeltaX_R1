@@ -8,7 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import AdminAction, Question, Round, RoundEnrollment, RoundStatus, ScoreEvent, Submission
+from .models import (AdminAction, Question, R1AReceipt, Round, RoundEnrollment,
+                     RoundStatus, ScoreEvent, Submission)
 from .round_locking import lock_round
 from .timing import utc_now
 from .question_reveal import ensure_question_snapshot
@@ -46,6 +47,19 @@ async def reconcile_r1a(
 
     rules = round_rules(round_obj).r1a
     deadline = round_obj.question_started_at + timedelta(milliseconds=rules.question_duration_ms)
+    # Admission commits a durable receipt under a shared Round lock. Owning the
+    # exclusive lock here therefore fences new admissions while every eligible
+    # pending receipt is resolved before unanswered rows or a snapshot exist.
+    pending = (await db.scalars(select(R1AReceipt).where(
+        R1AReceipt.status == "PENDING",
+        R1AReceipt.question_position == position,
+    ).order_by(R1AReceipt.id).with_for_update())).all()
+    if pending:
+        # Local import avoids an import cycle: the HTTP module also invokes this
+        # reconciler for read-side expiry checks.
+        from .api.r1a import resolve_receipt
+        for receipt in pending:
+            await resolve_receipt(db, receipt, round_obj)
     if authoritative_now < deadline:
         return ReconciliationResult(position, deadline)
 

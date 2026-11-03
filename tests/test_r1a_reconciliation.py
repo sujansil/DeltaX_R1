@@ -19,15 +19,17 @@ pytestmark = [
 async def reset_data():
     from app.db import SessionLocal
     from app.models import (AdminAction, LeaderboardSnapshot, Question, QuestionOption,
-                            Round, RoundEnrollment, ScoreEvent, Submission, Team)
+                            R1AReceipt, Round, RoundEnrollment, ScoreEvent, Submission, Team)
     async with SessionLocal() as db:
-        for model in (AdminAction, LeaderboardSnapshot, ScoreEvent, Submission,
+        for model in (AdminAction, LeaderboardSnapshot, ScoreEvent, R1AReceipt, Submission,
                       RoundEnrollment, QuestionOption, Question, Round, Team):
             await db.execute(delete(model))
         await db.commit()
 
 
 async def seed(*, position=1, age_seconds=31, paused=False):
+    from dataclasses import replace
+    from app.competition_rules import configured_rules
     from app.db import SessionLocal
     from app.models import Question, QuestionOption, Round, RoundEnrollment, Submission, Team
     from app.timing import utc_now
@@ -45,9 +47,12 @@ async def seed(*, position=1, age_seconds=31, paused=False):
         await db.flush()
         q.correct_option_id = option.id
         started = utc_now() - timedelta(seconds=age_seconds)
+        rules = configured_rules()
+        rules = replace(rules, r1a=replace(rules.r1a, advance_mode="MANUAL"))
         db.add(Round(code="R1A", status="PAUSED" if paused else "LIVE",
                      started_at=started, current_position=position,
                      question_started_at=started,
+                     rules_version=rules.version, rules_snapshot=rules.snapshot_json(),
                      paused_at=utc_now() if paused else None))
         db.add_all((
             RoundEnrollment(team_id=connected.id, round_code="R1A", enrolled_at=started),
@@ -86,6 +91,89 @@ async def test_preserves_answer_and_reconciles_disconnected_roster_idempotently(
         assert unanswered.recorded_at >= unanswered.timed_out_at
         assert all(r.team_id != ineligible for r in rows)
         assert await db.scalar(select(func.count()).select_from(ScoreEvent)) == 1
+
+
+async def test_pending_pre_cutoff_receipt_is_scored_by_receipt_time_before_publish():
+    require_disposable_test_database()
+    import json
+    from app.db import SessionLocal
+    from app.models import LeaderboardSnapshot, R1AReceipt, Round, Submission
+    from app.question_reveal import snapshot_payload
+    from app.r1a_reconciliation import reconcile_r1a
+    await reset_data()
+    _, team_id, _, option_id, started = await seed(age_seconds=31)
+    decay_rules = {
+        "version": "receipt-decay-test", "r1a": {
+            "advance_mode": "MANUAL", "auto_advance_delay_ms": 2000,
+            "decay_enabled": True, "question_count": 23,
+            "question_duration_ms": 30000, "full_score_until_ms": 10000,
+            "decay_end_ms": 25000, "maximum_correct_score": 1000,
+            "minimum_correct_score": 250, "wrong_answer_score": -500,
+            "unanswered_score": 0}, "r1b": {
+            "turn_count": 4, "total_answering_budget_ms": 1680000,
+            "correct_score": 4000, "wrong_score": -1500,
+            "skip_unanswered_score": 0, "default_timer_mode": "CONTINUOUS"}}
+    async with SessionLocal() as db:
+        round_obj = await db.scalar(select(Round).where(Round.code == "R1A"))
+        round_obj.rules_version = decay_rules["version"]
+        round_obj.rules_snapshot = json.dumps(decay_rules)
+        db.add(R1AReceipt(team_id=team_id, session_id="", option_id=option_id,
+            received_at=started + timedelta(milliseconds=15000), question_position=1,
+            question_started_at=started, question_deadline=started + timedelta(seconds=30)))
+        await db.commit()
+    async with SessionLocal() as db:
+        await reconcile_r1a(db, now=started + timedelta(seconds=31))
+        await db.commit()
+    async with SessionLocal() as db:
+        submission = await db.scalar(select(Submission).where(Submission.team_id == team_id))
+        receipt = await db.scalar(select(R1AReceipt).where(R1AReceipt.team_id == team_id))
+        snapshot = await db.scalar(select(LeaderboardSnapshot).order_by(LeaderboardSnapshot.id.desc()))
+        assert (submission.submitted_at, submission.elapsed_ms, submission.points) == (
+            started + timedelta(milliseconds=15000), 15000, 750)
+        assert receipt.status == "ACCEPTED" and receipt.submission_id == submission.id
+        row = next(row for row in snapshot_payload(snapshot.data_json)["rows"] if row["team_id"] == team_id)
+        assert row["score"] == 750
+
+
+async def test_one_hundred_distinct_teams_submit_concurrently_with_decay():
+    require_disposable_test_database()
+    from dataclasses import replace
+    from app.api import r1a
+    from app.competition_rules import configured_rules
+    from app.db import SessionLocal
+    from app.models import Question, QuestionOption, Round, ScoreEvent, Submission, Team
+    from app.scoring import r1a_points
+    from app.timing import utc_now
+    await reset_data()
+    rules = configured_rules()
+    rules = replace(rules, r1a=replace(rules.r1a, decay_enabled=True,
+        full_score_until_ms=10_000, decay_end_ms=25_000, advance_mode="MANUAL"))
+    started = utc_now() - timedelta(milliseconds=15_000)
+    async with SessionLocal() as db:
+        question = Question(round_code="R1A", position=1, answer_type="MCQ")
+        db.add(question); await db.flush()
+        option = QuestionOption(question_id=question.id, position=1, option_text="correct")
+        db.add(option); await db.flush(); question.correct_option_id = option.id
+        teams = [Team(code=f"LOAD-{i:03}", name=f"Load {i}", login_username=f"load-{i:03}")
+                 for i in range(100)]
+        db.add_all(teams); await db.flush()
+        team_ids = [team.id for team in teams]
+        option_id = option.id
+        db.add(Round(code="R1A", status="LIVE", started_at=started,
+            current_position=1, question_started_at=started,
+            rules_version=rules.version, rules_snapshot=rules.snapshot_json()))
+        await db.commit()
+
+    async def submit_one(team_id):
+        async with SessionLocal() as db:
+            return await r1a.submit(r1a.SubmitMCQ(option_id=option_id), {"team_id": team_id}, db)
+    results = await asyncio.gather(*(submit_one(team_id) for team_id in team_ids))
+    assert len(results) == 100 and all(result["accepted"] for result in results)
+    async with SessionLocal() as db:
+        submissions = (await db.scalars(select(Submission).order_by(Submission.team_id))).all()
+        assert len(submissions) == 100
+        assert await db.scalar(select(func.count()).select_from(ScoreEvent)) == 100
+        assert all(row.points == r1a_points(row.elapsed_ms, rules.r1a) for row in submissions)
 
 
 async def test_round_start_snapshots_enabled_teams_once():
