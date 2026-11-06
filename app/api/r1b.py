@@ -54,7 +54,7 @@ async def locked_state(db: AsyncSession, team_id: int, round_obj: Round):
     ).on_conflict_do_nothing(constraint="uq_team_round"))
     return (await db.execute(select(TeamRoundState).where(
         TeamRoundState.team_id == team_id, TeamRoundState.round_code == "R1B"
-    ).with_for_update())).scalar_one()
+    ).with_for_update().execution_options(populate_existing=True))).scalar_one()
 
 
 def freeze_clock(state: TeamRoundState, now) -> int:

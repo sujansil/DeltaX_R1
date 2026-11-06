@@ -176,6 +176,44 @@ async def test_delayed_autosave_cannot_change_manual_submit_or_skip(skip):
         assert await db.scalar(select(func.count()).select_from(ScoreEvent)) == 1
 
 
+async def test_submit_refreshes_state_when_worker_resolves_admitted_receipt(monkeypatch):
+    """A worker may advance the relay after admission but before the HTTP response."""
+    require_disposable_test_database()
+    from app.api import r1b
+    from app.db import SessionLocal
+    from app.models import R1BReceipt, TeamRoundState
+    from app.r1b_finalization import reconcile_r1b_batch
+
+    await reset_data(); team_id, _, turn_id, _ = await seed_active()
+    original = r1b.require_live_round
+    calls = 0
+
+    async def reconcile_between_transactions(db, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            async with SessionLocal() as worker_db:
+                await reconcile_r1b_batch(worker_db)
+                await worker_db.commit()
+        return await original(db, *args, **kwargs)
+
+    monkeypatch.setattr(r1b, "require_live_round", reconcile_between_transactions)
+    async with SessionLocal() as player_db:
+        response = await r1b.submit(
+            r1b.SubmitNumeric(turn_id=turn_id, answer="42"),
+            {"team_id": team_id}, player_db)
+
+    assert response == {"position": 1, "accepted": True,
+                        "message": "Answer recorded", "next_player": 2}
+    async with SessionLocal() as check:
+        receipt = await check.scalar(select(R1BReceipt))
+        state = await check.scalar(select(TeamRoundState).where(
+            TeamRoundState.team_id == team_id))
+        assert receipt.status == "ACCEPTED"
+        assert (state.current_player, state.current_question_position,
+                state.turn_status) == (2, 2, "WAITING")
+
+
 async def test_r1b_per_turn_visibility_true_uses_one_provisional_snapshot():
     require_disposable_test_database()
     from dataclasses import replace
