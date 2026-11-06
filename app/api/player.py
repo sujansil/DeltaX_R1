@@ -127,8 +127,9 @@ class BootstrapOut(BaseModel):
     question: QuestionOut | None = None
     own_outcome: OwnOutcomeOut
     draft: DraftOut | None = None
-    score_total: int = 0
+    score_total: int | None = None
     leaderboard: dict | None = None
+    prior_r1a_results: dict | None = None
     r1a_phase: dict | None = None
     available_actions: list[Literal["START", "READY", "SUBMIT", "SKIP", "SAVE_DRAFT"]]
 
@@ -192,10 +193,10 @@ async def _reconcile_if_due(db: AsyncSession, user: dict) -> None:
         await db.commit()
 
 
-def _outcome(submission: Submission | None) -> OwnOutcomeOut:
+def _outcome(submission: Submission | None, *, reveal_score: bool = True) -> OwnOutcomeOut:
     if not submission:
         return OwnOutcomeOut(accepted=False, finalized=False)
-    return OwnOutcomeOut(
+    outcome = OwnOutcomeOut(
         accepted=submission.submitted_at is not None,
         finalized=True, score_revealed=True,
         submission_id=submission.id,
@@ -210,6 +211,19 @@ def _outcome(submission: Submission | None) -> OwnOutcomeOut:
         recorded_at=submission.recorded_at,
         finalization_source=submission.finalization_source,
     )
+    if not reveal_score:
+        # R1B progress is visible, but correctness, score, exact input and
+        # timeout/draft provenance remain embargoed until an immutable publish.
+        outcome.accepted = True
+        outcome.score_revealed = False
+        outcome.answer_text = None
+        outcome.result = None
+        outcome.points = None
+        outcome.submitted_at = None
+        outcome.timed_out_at = None
+        outcome.recorded_at = None
+        outcome.finalization_source = None
+    return outcome
 
 
 def _snapshot_version(parts: list[object]) -> str:
@@ -254,6 +268,11 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
         raise coded_error(409, "ROUND_NOT_CONFIGURED", "The session round is not configured")
     now = utc_now()
     rules = round_rules(round_obj)
+    show_intermediate = (rules.r1a.show_results_after_each_question
+                         if device.round_code == "R1A"
+                         else rules.r1b.show_results_after_each_question)
+    leaderboard_out = await read_leaderboard(
+        db, device.round_code, team.id, include_intermediate=show_intermediate)
 
     identity = IdentityOut(
         team_id=team.id, team_code=team.code, team_name=team.name,
@@ -299,7 +318,10 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
         if active and not submission and question is None:
             raise coded_error(503, "QUESTION_NOT_CONFIGURED", "The current question is not configured")
         outcome = _outcome(submission)
-        if submission and submission.question_position > closed_position(round_obj, now):
+        reveal_r1a = bool(leaderboard_out.get("final") or (
+            show_intermediate and submission
+            and submission.question_position <= closed_position(round_obj, now)))
+        if submission and not reveal_r1a:
             outcome.score_revealed = False
             outcome.result = None
             outcome.points = None
@@ -316,10 +338,14 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
         state = await db.scalar(select(TeamRoundState).where(
             TeamRoundState.team_id == team.id, TeamRoundState.round_code == "R1B"
         ))
-        submission = await db.scalar(select(Submission).where(
-            Submission.team_id == team.id, Submission.round_code == "R1B",
-            Submission.player_number == device.player_number,
-        ).order_by(Submission.question_position.desc()).limit(1))
+        published_at = leaderboard_out.get("published_at") if leaderboard_out.get("published") else None
+        submission_query = select(Submission).where(
+            Submission.team_id == team.id, Submission.round_code == "R1B")
+        if published_at is not None:
+            # A prior immutable snapshot must never reveal a later turn.
+            submission_query = submission_query.where(Submission.recorded_at <= published_at)
+        submission = await db.scalar(submission_query.order_by(
+            Submission.question_position.desc()).limit(1))
         question = None
         draft_out = None
         actions = []
@@ -328,7 +354,7 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
             remaining = rules.r1b.total_answering_budget_ms
             running = False
             screen = "ENDED" if round_obj.status == "ENDED" else "NOT_STARTED"
-            if round_obj.status == "LIVE" and device.player_number == 1:
+            if round_obj.status == "LIVE":
                 actions = ["START"]
         else:
             turn_status, current_player = state.turn_status, state.current_player
@@ -338,7 +364,6 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
             remaining = effective_remaining_ms(state, reference)
             running = bool(round_obj.status == "LIVE" and state.clock_running_since
                            and turn_status not in ("FINISHED", "EXPIRED"))
-            owns_turn = device.player_number == current_player
             if round_obj.status == "ENDED":
                 screen = "ENDED"
             elif turn_status == "FINISHED":
@@ -349,13 +374,11 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
                 screen = "PAUSED"
             elif turn_status == "NOT_STARTED":
                 screen = "NOT_STARTED"
-                if owns_turn:
-                    actions = ["START"]
+                actions = ["START"]
             elif turn_status == "WAITING":
-                screen = "HANDOVER_READY" if owns_turn else "WAITING_TURN"
-                if owns_turn:
-                    actions = ["READY"]
-            elif turn_status == "ACTIVE" and owns_turn:
+                screen = "HANDOVER_READY"
+                actions = ["READY"]
+            elif turn_status == "ACTIVE":
                 screen = "ACTIVE"
                 actions = ["SUBMIT", "SKIP", "SAVE_DRAFT"]
                 question = await _question_out(db, "R1B", position)
@@ -364,7 +387,7 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
             else:
                 screen = "WAITING_TURN"
 
-            if turn_status == "ACTIVE" and owns_turn and state.current_turn_id:
+            if turn_status == "ACTIVE" and state.current_turn_id:
                 draft = await db.scalar(select(R1BDraft).where(
                     R1BDraft.team_id == team.id, R1BDraft.turn_id == state.current_turn_id,
                 ))
@@ -374,7 +397,7 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
                     accepted_at=draft.accepted_at if draft else None,
                 )
 
-        outcome = _outcome(submission)
+        outcome = _outcome(submission, reveal_score=published_at is not None)
         player_state = PlayerStateOut(
             screen=screen, current_player=current_player,
             current_question_position=position, turn_status=turn_status,
@@ -400,9 +423,9 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
                          submission.id if submission else None,
                          draft_out.version if draft_out else None]
 
-    score_total = await visible_total(db, team.id, device.round_code,
-                                      closed_position(round_obj, now))
-    leaderboard_out = await read_leaderboard(db, device.round_code, team.id)
+    # Score and rank always come from the same immutable result view.
+    mine = leaderboard_out.get("mine") if leaderboard_out.get("published") else None
+    score_total = mine.get("score") if mine else None
     version_parts.extend([score_total, leaderboard_out.get("publication_id")])
     response = BootstrapOut(
         snapshot_version=_snapshot_version(version_parts), snapshot_at=now,
@@ -410,6 +433,9 @@ async def bootstrap(user=Depends(require_player), db: AsyncSession = Depends(get
         timer=timer, question=question, own_outcome=outcome,
         draft=draft_out if device.round_code == "R1B" else None,
         available_actions=actions, score_total=score_total, leaderboard=leaderboard_out,
+        prior_r1a_results=(await read_leaderboard(
+            db, "R1A", team.id, include_intermediate=False)
+            if device.round_code == "R1B" else None),
         r1a_phase=({
             "phase": "RESULT" if round_obj.r1a_result_due_at else
                      "QUESTION" if active else "IDLE",

@@ -25,7 +25,7 @@ Run your existing `./start.sh` and visit `/player/` and `/admin-ui/`. Reload the
 - Muted charcoal, steel-blue lines, warm-white questions and subdued sage controls.
 - The question is the main content. Team name, current-round score and **last published** rank stay secondary.
 - MCQ text/images and numerical input. Inline `$...$`, display `$$...$$`, `\(...\)` and `\[...\]` equations are rendered by self-hosted KaTeX.
-- Relay Ready, waiting, pause, completion and expiry screens. Inactive slots never fetch another player's question through a separate question request.
+- Shared-device Relay READY, handover, pause, completion and expiry screens. The next question stays hidden until the next player presses READY on the same device.
 - Serialized, versioned numerical autosave. Polling does not overwrite typing. Refresh explicitly restores the server draft; a conflict asks for restoration rather than silently overwriting another tab.
 - Full-screen points reveal after R1A question closure or completion of the caller's relay turn. It uses finalized server outcomes, is not replayed just because the page reloads, and yields immediately to a new active question/Ready screen. If the client misses the result interval entirely, it does not obscure the next question just to show an old animation.
 - Counts are for the current session round, not a combined R1A+R1B total. Rank comes only from published snapshots; it is never estimated client-side.
@@ -83,7 +83,7 @@ Full backend verification on your machine:
 
 1. Login on a phone: scroll opening, activation/sign-in, password visibility and logout.
 2. Run an R1A question, submit, wait for closure and score reveal. Refresh after acceptance; it must stay locked. Publish a board and check the last-published rank.
-3. Use four separate device sessions for R1B. Check each slot's Ready/waiting permissions. Test both timer modes using separate fresh preview rounds.
+3. Use one device session per R1B team and pass it through all four READY/answer handovers. Test both timer modes using separate fresh preview rounds.
 4. Type a numerical draft, wait for Saved, refresh, and verify it. Test skip, timeout, pause/resume and admin End. Unsaved text is not guaranteed at expiry.
 5. Revoke a session, reconnect within/outside its lease, inspect admin controls and download Excel.
 6. Run the full PostgreSQL suite before accepting the backend addition. Stress testing remains after R2 integration.

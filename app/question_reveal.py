@@ -14,6 +14,8 @@ from .models import LeaderboardSnapshot, RoundEnrollment, ScoreEvent, Submission
 from .competition_rules import round_rules
 
 KIND = "R1A_QUESTION_REVEAL_V1"
+FINAL_KIND = "EXPLICIT_FINAL_PUBLICATION_V1"
+R1B_TURN_KIND = "R1B_TURN_REVEAL_V1"
 
 
 def closed_position(round_obj, now) -> int:
@@ -48,8 +50,9 @@ def snapshot_payload(raw: str) -> dict:
     """Decode both old list snapshots and the new versioned envelope."""
     data = json.loads(raw)
     if isinstance(data, list):
-        return {"rows": data, "after_question": None, "kind": "LEGACY"}
-    if isinstance(data, dict) and data.get("kind") == KIND and isinstance(data.get("rows"), list):
+        return {"rows": data, "after_question": None, "kind": "LEGACY_UNTYPED"}
+    if (isinstance(data, dict) and data.get("kind") in {KIND, FINAL_KIND, R1B_TURN_KIND}
+            and isinstance(data.get("rows"), list)):
         return data
     raise ValueError("Unsupported leaderboard snapshot format")
 
@@ -108,11 +111,20 @@ async def ensure_question_snapshot(db: AsyncSession, round_obj, now):
     return snapshot
 
 
-async def read_leaderboard(db: AsyncSession, round_code: str, team_id: int | None = None):
+async def read_leaderboard(db: AsyncSession, round_code: str, team_id: int | None = None,
+                           *, include_intermediate: bool = True):
     query = select(LeaderboardSnapshot).where(LeaderboardSnapshot.round_code == round_code)
+    kind = func.jsonb_extract_path_text(cast(LeaderboardSnapshot.data_json, JSONB), "kind")
     if round_code == "R1A":
         # Never expose a legacy/manual snapshot containing still-open answers.
-        query = query.where(func.jsonb_extract_path_text(cast(LeaderboardSnapshot.data_json, JSONB), "kind") == KIND)
+        allowed = [FINAL_KIND]
+        if include_intermediate:
+            allowed.append(KIND)
+        query = query.where(kind.in_(allowed))
+    elif include_intermediate:
+        query = query.where(kind.in_([FINAL_KIND, R1B_TURN_KIND]))
+    else:
+        query = query.where(kind == FINAL_KIND)
     snapshot = await db.scalar(query.order_by(LeaderboardSnapshot.published_at.desc(),
                                              LeaderboardSnapshot.id.desc()).limit(1))
     if snapshot is None:
@@ -124,5 +136,8 @@ async def read_leaderboard(db: AsyncSession, round_code: str, team_id: int | Non
     return {"round_code": round_code, "published": True, "publication_id": snapshot.id,
             "published_at": snapshot.published_at, "after_question": payload.get("after_question"),
             "question_deadline": payload.get("question_deadline"),
-            "automatic": payload.get("kind") == KIND, "total_teams": len(rows),
+            "automatic": payload.get("kind") in {KIND, R1B_TURN_KIND},
+            "final": payload.get("kind") == FINAL_KIND,
+            "provisional": payload.get("kind") == R1B_TURN_KIND,
+            "total_teams": len(rows),
             "scope": {"round_code": round_code, "immutable": True}, "data": rows[:16], "mine": mine}

@@ -33,7 +33,7 @@ python3 apply_patch.py /path/to/round1_system --rollback /backup/path/printed/ab
 | Clock policy | Read/change R1B timer mode before start; show locked state afterward |
 | Questions | List, read, create, update and delete; enable/disable; add/edit/delete options and select correctness; numerical answers/tolerances; question and option image uploads |
 | Teams | Paginated directory, creation, detail/edit, pre-enrolment enablement, password reset that revokes sessions, and one-time activation-token display for newly created teams |
-| Sessions | Per-team round/slot/lease listing, revoke one session or all team sessions with a required reason |
+| Sessions | Per-team round/device-claim/lease listing, revoke one session or all team sessions with a required reason |
 | Submissions | Round/question/team filters; pagination; optional polling; submitted inputs, timeouts, sources, draft provenance and score outcomes |
 | Results | Publish an immutable leaderboard snapshot, inspect the publication returned by that action, and download real Excel results for R1A/R1B/both |
 | Audit log | Paginated attributed administrative actions |

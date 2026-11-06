@@ -1593,7 +1593,7 @@ function Sessions() {
   return (
     <Panel
       title="Player sessions"
-      description="R1A permits one leased session; R1B permits four relay slots. Closed-browser detection uses lease expiry, not a physical-device fingerprint."
+      description="R1A and R1B each permit one leased team session. In R1B, four players pass one shared device; the server does not verify who is physically holding it. Closed-browser detection uses lease expiry."
     >
       <form
         className="inline-form"
@@ -1648,7 +1648,7 @@ function Sessions() {
               <Table
                 columns={[
                   { key: "round_code", label: "Round" },
-                  { key: "slot", label: "Slot" },
+                  { key: "slot", label: "Device claim" },
                   {
                     key: "session_id",
                     label: "Session",
@@ -1884,6 +1884,7 @@ function Submissions() {
 }
 function Results() {
   const automatic=useData("/api/admin/leaderboard/current?round_code=R1A",{interval:3000});
+  const dashboard=useData("/api/admin/dashboard",{interval:3000});
   const { request, run, confirm } = useApp(),
     [scope, setScope] = useState("BOTH"),
     [publication, setPublication] = useState(null);
@@ -1923,12 +1924,12 @@ function Results() {
   return (
     <>
       <Panel
-        title="Leaderboard reveal"
-        description="R1A scores and leaderboard reveal automatically after each configured question window. The next question still requires the organiser’s reveal."
+        title="Final results publication"
+        description="End a round first, then publish one immutable final snapshot. Intermediate visibility follows that round’s captured rules."
       >
         <div className="actions">
-          <span className="help">WizTime: automatic · no Publish step</span>
-          <BusyButton label="Publish R1B" onClick={() => publish("R1B")} />
+          <BusyButton label="Publish final R1A" disabled={dashboard.data?.rounds?.find(r=>r.code==="R1A")?.status!=="ENDED"} onClick={() => publish("R1A")} />
+          <BusyButton label="Publish final R1B" disabled={dashboard.data?.rounds?.find(r=>r.code==="R1B")?.status!=="ENDED"} onClick={() => publish("R1B")} />
         </div>
       </Panel>
       <Panel title="Latest automatic WizTime leaderboard">

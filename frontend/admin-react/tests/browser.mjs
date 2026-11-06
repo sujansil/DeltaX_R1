@@ -492,8 +492,10 @@ try {
   );
   checks++;
   await page.getByRole("button", { name: "Results", exact: true }).click();
-  assert.equal(await page.getByRole("button",{name:"Publish R1A",exact:true}).count(),0);checks++;
-  await page.getByRole("button", { name: "Publish R1B", exact: true }).click();
+  assert.equal(await page.getByRole("button",{name:"Publish final R1A",exact:true}).count(),1);checks++;
+  rounds[1].status="ENDED";
+  await page.reload();await page.getByRole("button", { name: "Results", exact: true }).click();
+  await page.getByRole("button", { name: "Publish final R1B", exact: true }).click();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Confirm", exact: true })

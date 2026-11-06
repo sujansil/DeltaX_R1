@@ -14,7 +14,7 @@ The checked-in file is an annotated example. Every `*_ms` value is integer
 milliseconds (`30000` is 30 seconds; `1680000` is 28 minutes), and scores are integer
 points. Increment the human-readable `version` when rules change. Invalid or missing
 configuration stops startup with a clear error. R1B currently supports exactly four
-turns because turns are coupled to four player/device slots and database authorization
+turns on one shared team device; authenticated device identity is separate from the current relay player
 checks; other relay lengths are explicitly rejected.
 
 Rules are snapshotted onto a round in the same locked transaction that starts it.
@@ -23,6 +23,13 @@ historical rounds keep their saved rules across edits and restarts. The migratio
 backfills existing started/history rows with the former hardcoded defaults. Drafts use
 the current file when validated and started. An organiser's explicit R1B timer-mode
 selection is preserved; the configured default applies only if no mode was selected.
+
+`r1a.show_results_after_each_question` and
+`r1b.show_results_after_each_question` independently control intermediate player
+feedback. They default to `true` and `false` respectively for legacy snapshots.
+R1A AUTO progression never opens an intermediate leaderboard even when feedback is
+enabled. The admin Publish action is reserved for an ended round and creates a typed,
+immutable final snapshot that overrides intermediate visibility restrictions.
 
 ## Architecture
 
@@ -213,8 +220,8 @@ ordering when two requests share the same snapshot timestamp/version.
 
 Questions are returned only for an authorized actionable turn. R1A options never
 include the correct-option marker; R1B never exposes answer keys or tolerances.
-Inactive relay slots receive `WAITING_TURN` without another slot's question or
-draft. `own_outcome` is limited to the caller's team and, for R1B, relay slot.
+During handover the shared session receives `HANDOVER_READY` without the next
+question or draft. `own_outcome` is limited to the authenticated team.
 
 Affected authentication errors use readable structured details:
 
@@ -230,7 +237,8 @@ player harness accepts both legacy string details and structured details.
 ## Player sessions
 
 Player authorization is a persisted server-side lease, not a device fingerprint.
-JWTs carry an immutable session ID plus the server-assigned round and relay slot;
+JWTs carry an immutable session ID plus the server-assigned round and a legacy
+device claim. The claim is not the current R1B relay-player position;
 the database row is checked again on every protected request. The access-token
 expiry is only an upper bound. The shorter lease defaults to 60 seconds and the
 browser heartbeats every 15 seconds (`PLAYER_SESSION_LEASE_SECONDS` and
@@ -242,7 +250,7 @@ The server derives login scope from round state. A live/paused R1B takes priorit
 otherwise R1A owns login until it ends, then draft/live R1B does. Existing R1A
 sessions do not become R1B sessions at transition and do not consume R1B slots;
 players log in again for a new server-assigned scope. R1A permits one slot and
-R1B permits four distinct slots, but R1B can start with only slot 1 connected.
+R1B permits one shared-device session per team. The same session completes all four turns.
 Logout or admin revocation changes only session rows and never resets relay state,
 player assignment, scores, submissions, or clocks.
 
@@ -257,7 +265,7 @@ seconds. A refresh/reconnect heartbeat restores the ordinary lease. Browser Back
 tab hiding, background throttling, sleep, and network loss do not explicitly log
 out; without successful heartbeats the lease eventually expires. Browsers do not
 guarantee unload delivery, so immediate close detection is not claimed. A copied
-token in a duplicated tab represents the same session/slot—there is deliberately
+token in a duplicated tab represents the same session—there is deliberately
 no claim of physical-device identity. Tokens and passwords are sent in request
 headers/bodies, never URLs or application logs.
 
@@ -265,7 +273,7 @@ Migration `0006_round_sessions` preserves credentials and competition tables. It
 keeps old session rows, infers their round from server state, caps their first
 post-migration lease at 60 seconds, and accepts their legacy JWT claims by looking
 up the persisted session. It drops only the old one-row-per-team constraint and
-adds round/slot checks plus an active-slot partial unique index. Apply normally:
+adds round checks plus an active team/round partial unique index. Apply normally:
 
 ```bash
 .venv/bin/alembic upgrade head
@@ -348,7 +356,7 @@ Numerical answers use configurable absolute/relative tolerance per question.
 
 ### Draft autosave and timeout finalization
 
-An ACTIVE turn has a server-generated `turn_id`. The owning relay slot reads its
+An ACTIVE turn has a server-generated `turn_id`. The shared team session reads its
 current draft with `GET /api/r1b/draft` and saves with `PUT /api/r1b/draft` using:
 
 ```json
@@ -359,7 +367,7 @@ Versions must increase for that turn. A lower/equal version or an old `turn_id`
 is rejected, so delayed requests cannot overwrite a newer edit or affect the next
 player. `answer` may be an empty string, which explicitly clears an older value.
 The response returns the accepted server timestamp and version. Reads return the
-same metadata for refresh recovery. Only the authenticated active slot can read
+same metadata for refresh recovery. Only the authenticated team session can read
 or write; paused, ended, expired, submitted, skipped, and stale turns reject
 writes. Client timestamps are not accepted.
 

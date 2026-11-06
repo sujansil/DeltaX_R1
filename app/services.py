@@ -51,9 +51,11 @@ class LeaderboardService:
         return [{"rank": i, "team_id": r.id, "team_code": r.code, "team_name": r.name, "score": int(r.score)}
                 for i, r in enumerate(q.all(), start=1)]
 
-    async def publish(self, db: AsyncSession, round_code: str):
+    async def publish(self, db: AsyncSession, round_code: str, *, kind: str, metadata: dict | None = None):
         data = await self.calculate(db, round_code)
-        snap = LeaderboardSnapshot(round_code=round_code, data_json=json.dumps(data))
+        snap = LeaderboardSnapshot(round_code=round_code, data_json=json.dumps({
+            "kind": kind, "rows": data, **(metadata or {}),
+        }))
         db.add(snap)
         await db.flush()
         return snap, data

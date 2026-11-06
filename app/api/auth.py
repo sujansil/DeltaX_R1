@@ -108,6 +108,8 @@ async def team_login(data: LoginIn, db: AsyncSession = Depends(get_db)):
             PlayerDevice.round_code == round_obj.code,
             PlayerDevice.active.is_(True),
         ))).all())
+        # player_number is retained as an authenticated-device claim for JWT
+        # compatibility. It is no longer the physical relay-player position.
         slot = next((n for n in range(1, ROUND_CAPACITY[round_obj.code] + 1)
                      if n not in active_slots), None)
         if slot is None:

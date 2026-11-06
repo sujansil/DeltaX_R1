@@ -2,6 +2,7 @@ import asyncio
 import os
 from datetime import timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -87,6 +88,7 @@ async def seed_r1b(action):
                 clock_started_at=now,
                 clock_running_since=now,
                 ready_at=now if action == "submit" else None,
+                current_turn_id=str(uuid4()) if action == "submit" else None,
             ))
         await db.commit()
         return team.id
@@ -179,13 +181,17 @@ async def test_r1b_player_actions_order_with_admin(monkeypatch, action, transiti
     require_disposable_test_database()
     from app.api import admin, r1b
     from app.db import SessionLocal
+    from app.models import TeamRoundState
 
     async def player_call(team_id, db):
         if action == "start":
             return await r1b.start_team({"team_id": team_id}, db)
         if action == "ready":
             return await r1b.ready({"team_id": team_id}, db)
-        return await r1b.submit(r1b.SubmitNumeric(answer="42"), {"team_id": team_id}, db)
+        turn_id = await db.scalar(select(TeamRoundState.current_turn_id).where(
+            TeamRoundState.team_id == team_id))
+        return await r1b.submit(r1b.SubmitNumeric(turn_id=turn_id, answer="42"),
+                                {"team_id": team_id}, db)
 
     # Player first.
     await reset_data()
@@ -267,13 +273,17 @@ async def test_duplicate_submit_and_ready_are_serialized():
     require_disposable_test_database()
     from app.api import r1b
     from app.db import SessionLocal
+    from app.models import TeamRoundState
 
     await reset_data()
     team_id = await seed_r1b("submit")
+    async with SessionLocal() as lookup:
+        turn_id = await lookup.scalar(select(TeamRoundState.current_turn_id).where(
+            TeamRoundState.team_id == team_id))
     async with SessionLocal() as first_db, SessionLocal() as second_db:
         calls = [
-            asyncio.create_task(r1b.submit(r1b.SubmitNumeric(answer="42"), {"team_id": team_id}, first_db)),
-            asyncio.create_task(r1b.submit(r1b.SubmitNumeric(answer="42"), {"team_id": team_id}, second_db)),
+            asyncio.create_task(r1b.submit(r1b.SubmitNumeric(turn_id=turn_id, answer="42"), {"team_id": team_id}, first_db)),
+            asyncio.create_task(r1b.submit(r1b.SubmitNumeric(turn_id=turn_id, answer="42"), {"team_id": team_id}, second_db)),
         ]
         results = await asyncio.wait_for(asyncio.gather(*calls, return_exceptions=True), TIMEOUT)
     assert sum(not isinstance(result, Exception) for result in results) == 1
@@ -333,7 +343,7 @@ async def test_r1a_deadline_uses_receipt_before_lock_wait():
 
 
 @pytest.mark.parametrize("action", ["ready", "submit"])
-async def test_r1b_deadline_is_checked_after_lock_wait(action):
+async def test_r1b_ready_uses_lock_time_but_submit_uses_body_receipt_time(action):
     require_disposable_test_database()
     from app.api import r1b
     from app.db import SessionLocal
@@ -355,19 +365,25 @@ async def test_r1b_deadline_is_checked_after_lock_wait(action):
         if action == "ready":
             player = asyncio.create_task(r1b.ready({"team_id": team_id}, player_db))
         else:
+            turn_id = await player_db.scalar(select(TeamRoundState.current_turn_id).where(
+                TeamRoundState.team_id == team_id))
             player = asyncio.create_task(r1b.submit(
-                r1b.SubmitNumeric(answer="42"), {"team_id": team_id}, player_db))
+                r1b.SubmitNumeric(turn_id=turn_id, answer="42"), {"team_id": team_id}, player_db))
         await assert_waiting(player)
         await asyncio.sleep(0.2)
         await blocker.commit()
-        with pytest.raises(HTTPException) as rejected:
-            await asyncio.wait_for(player, TIMEOUT)
-        assert rejected.value.status_code == 409
+        if action == "ready":
+            with pytest.raises(HTTPException) as rejected:
+                await asyncio.wait_for(player, TIMEOUT)
+            assert rejected.value.status_code == 409
+        else:
+            result = await asyncio.wait_for(player, TIMEOUT)
+            assert result["accepted"] is True
+            assert "result" not in result and "points" not in result
 
     async with SessionLocal() as check:
         state = await check.scalar(select(TeamRoundState).where(TeamRoundState.team_id == team_id))
-        assert state.turn_status == "EXPIRED"
-    # ACTIVE expiry now durably finalizes the latest server draft (empty here).
+        assert state.turn_status == ("EXPIRED" if action == "ready" else "WAITING")
     assert await counts("R1B") == ((1, 1) if action == "submit" else (0, 0))
 
 

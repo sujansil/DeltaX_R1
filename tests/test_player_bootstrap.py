@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -154,11 +155,11 @@ async def seed_r1b(*, status="LIVE", turn_status=None, mode="CONTINUOUS",
     return team_id, tokens
 
 
-async def test_r1b_active_owner_and_inactive_slot_visibility():
+async def test_r1b_shared_device_sees_current_turn_and_draft():
     require_disposable_test_database()
     from app.db import SessionLocal
     from app.models import R1BDraft, TeamRoundState
-    team_id, tokens = await seed_r1b(turn_status="ACTIVE", slot_ids=(1, 2), running=True)
+    team_id, tokens = await seed_r1b(turn_status="ACTIVE", slot_ids=(1,), running=True)
     async with SessionLocal() as db:
         state = await db.scalar(select(TeamRoundState).where(TeamRoundState.team_id == team_id))
         db.add(R1BDraft(team_id=team_id, question_position=1, player_number=1,
@@ -174,11 +175,6 @@ async def test_r1b_active_owner_and_inactive_slot_visibility():
     assert "correct_numeric" not in str(owner)
     assert "tolerance" not in str(owner)
 
-    waiting = (await get_bootstrap(tokens[2])).json()
-    assert waiting["player_state"]["screen"] == "WAITING_TURN"
-    assert waiting["question"] is None
-    assert waiting["draft"] is None
-    assert waiting["available_actions"] == []
 
 
 async def test_r1b_waiting_pause_finished_expired_and_global_end():
@@ -212,7 +208,7 @@ async def test_r1b_lost_submit_response_recovers_own_outcome_only():
     from app.models import Submission, TeamRoundState
     from app.timing import utc_now
     team_id, tokens = await seed_r1b(turn_status="WAITING", current_player=2,
-                                     slot_ids=(1, 2), running=True)
+                                     slot_ids=(1,), running=True)
     async with SessionLocal() as db:
         db.add(Submission(team_id=team_id, round_code="R1B", question_position=1,
                           player_number=1, answer_text="42", submitted_at=utc_now(),
@@ -223,12 +219,123 @@ async def test_r1b_lost_submit_response_recovers_own_outcome_only():
         await db.commit()
     previous = (await get_bootstrap(tokens[1])).json()
     assert previous["own_outcome"]["accepted"] is True
-    assert previous["own_outcome"]["answer_text"] == "42"
+    assert previous["own_outcome"]["score_revealed"] is False
+    assert previous["own_outcome"]["answer_text"] is None
+    assert previous["own_outcome"]["result"] is None
+    assert previous["own_outcome"]["points"] is None
+    assert previous["own_outcome"]["finalization_source"] is None
     assert previous["own_outcome"]["submission_id"]
-    assert previous["available_actions"] == []
-    next_slot = (await get_bootstrap(tokens[2])).json()
-    assert next_slot["own_outcome"]["finalized"] is False
-    assert next_slot["question"] is None
+    assert previous["score_total"] is None
+    assert previous["leaderboard"]["published"] is False
+    assert previous["available_actions"] == ["READY"]
+    handover = (await get_bootstrap(tokens[1])).json()
+    assert handover["player_state"]["screen"] == "HANDOVER_READY"
+    assert handover["question"] is None
+
+
+@pytest.mark.parametrize("result,points,source", [
+    ("CORRECT", 4000, "MANUAL"),
+    ("WRONG", -1500, "MANUAL"),
+    ("SKIPPED", 0, "SKIP"),
+    ("UNANSWERED", 0, "TIMEOUT_DRAFT"),
+])
+async def test_each_r1b_outcome_kind_is_neutral_before_publication(result, points, source):
+    require_disposable_test_database()
+    from app.db import SessionLocal
+    from app.models import Submission
+    from app.timing import utc_now
+    team_id, tokens = await seed_r1b(turn_status="FINISHED", current_player=4)
+    async with SessionLocal() as db:
+        now = utc_now()
+        db.add(Submission(team_id=team_id, round_code="R1B", question_position=1,
+                          player_number=1, answer_text="secret input",
+                          submitted_at=now if source != "TIMEOUT_DRAFT" else None,
+                          timed_out_at=now if source == "TIMEOUT_DRAFT" else None,
+                          recorded_at=now, result=result, points=points,
+                          finalization_source=source))
+        await db.commit()
+    data = (await get_bootstrap(tokens[1])).json()
+    assert data["score_total"] is None
+    assert data["leaderboard"]["published"] is False
+    outcome = data["own_outcome"]
+    assert outcome["finalized"] is True and outcome["score_revealed"] is False
+    for field in ("answer_text", "result", "points", "submitted_at", "timed_out_at",
+                  "recorded_at", "finalization_source"):
+        assert outcome[field] is None
+
+
+async def test_r1b_publication_is_the_only_player_score_reveal_and_is_immutable():
+    require_disposable_test_database()
+    from app.api import admin
+    from app.db import SessionLocal
+    from app.models import LeaderboardSnapshot, ScoreEvent, Submission, TeamRoundState
+    from app.timing import utc_now
+    team_id, tokens = await seed_r1b(turn_status="FINISHED", current_player=4)
+    async with SessionLocal() as db:
+        now = utc_now() - timedelta(seconds=2)
+        outcomes = [(1, "CORRECT", 4000), (2, "WRONG", -1500),
+                    (3, "SKIPPED", 0), (4, "UNANSWERED", 0)]
+        for position, result, points in outcomes:
+            row = Submission(team_id=team_id, round_code="R1B", question_position=position,
+                             player_number=position, answer_text=str(position),
+                             submitted_at=now if result != "UNANSWERED" else None,
+                             timed_out_at=now if result == "UNANSWERED" else None,
+                             recorded_at=now, result=result, points=points,
+                             finalization_source="TIMEOUT_EMPTY" if result == "UNANSWERED" else "MANUAL")
+            db.add(row); await db.flush()
+            db.add(ScoreEvent(team_id=team_id, round_code="R1B", submission_id=row.id,
+                              reason=f"TEST_{result}", points=points))
+        db.add(LeaderboardSnapshot(round_code="R1A", data_json=json.dumps({
+            "kind": "EXPLICIT_FINAL_PUBLICATION_V1",
+            "rows": [{"rank": 3, "team_id": team_id, "team_code": "BOOT",
+                      "team_name": "Bootstrap Team", "score": 1700}],
+        })))
+        await db.commit()
+    hidden = (await get_bootstrap(tokens[1])).json()
+    assert hidden["score_total"] is None
+    assert hidden["leaderboard"]["published"] is False
+    assert hidden["prior_r1a_results"]["final"] is True
+    assert hidden["prior_r1a_results"]["mine"] == {
+        "rank": 3, "team_id": team_id, "team_code": "BOOT",
+        "team_name": "Bootstrap Team", "score": 1700}
+    assert hidden["own_outcome"]["score_revealed"] is False
+    for field in ("answer_text", "result", "points", "timed_out_at", "finalization_source"):
+        assert hidden["own_outcome"][field] is None
+
+    async with SessionLocal() as db:
+        from app.models import Round
+        round_obj = await db.scalar(select(Round).where(Round.code == "R1B"))
+        round_obj.status = "ENDED"; round_obj.ended_at = utc_now()
+        await db.commit()
+    async with SessionLocal() as db:
+        publication = await admin.publish(admin.RoundAction(round_code="R1B"),
+                                          {"role": "admin"}, db)
+        publication_id = publication["publication_id"]
+    revealed = (await get_bootstrap(tokens[1])).json()
+    assert revealed["leaderboard"]["publication_id"] == publication_id
+    assert revealed["score_total"] == 2500
+    assert revealed["leaderboard"]["mine"]["score"] == 2500
+    assert revealed["own_outcome"]["result"] == "UNANSWERED"
+    assert revealed["own_outcome"]["points"] == 0
+
+    # A newer outcome after publication is neither added to the published total
+    # nor exposed through own_outcome.
+    async with SessionLocal() as db:
+        late = Submission(team_id=team_id, round_code="R1B", question_position=5,
+                          player_number=4, answer_text="late", submitted_at=utc_now(),
+                          recorded_at=utc_now(), result="CORRECT", points=9999,
+                          finalization_source="MANUAL")
+        # Position 5 is synthetic here, so avoid the competition unique position
+        # range constraints while still exercising snapshot-time filtering.
+        db.add(late); await db.flush()
+        db.add(ScoreEvent(team_id=team_id, round_code="R1B", submission_id=late.id,
+                          reason="POST_PUBLICATION", points=9999))
+        await db.commit()
+    unchanged = (await get_bootstrap(tokens[1])).json()
+    assert unchanged["score_total"] == 2500
+    assert unchanged["own_outcome"]["question_position"] == 4
+    async with SessionLocal() as db:
+        assert await db.get(LeaderboardSnapshot, publication_id) is not None
 
 
 async def test_bootstrap_rejects_revoked_and_cross_round_sessions_with_codes():
@@ -270,4 +377,4 @@ async def test_bootstrap_score_total_is_authoritative_and_team_round_scoped():
         await db.commit()
     response = await get_bootstrap(token)
     assert response.status_code == 200, response.text
-    assert response.json()["score_total"] == 500
+    assert response.json()["score_total"] is None

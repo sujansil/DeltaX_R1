@@ -46,6 +46,8 @@ def test_legacy_snapshot_defaults_to_manual_decay():
     rules = rules_from_dict(data).r1a
     assert rules.advance_mode == "MANUAL"
     assert rules.decay_enabled is True
+    assert rules.show_results_after_each_question is True
+    assert rules_from_dict(data).r1b.show_results_after_each_question is False
 
 
 def test_snapshot_round_trip_and_public_contract():
@@ -71,6 +73,8 @@ def test_started_round_uses_snapshot_for_duration_and_final_position():
     lambda d: d["r1a"].update(minimum_correct_score=900),
     lambda d: d["r1b"].update(turn_count=5),
     lambda d: d["r1b"].update(default_timer_mode="OTHER"),
+    lambda d: d["r1a"].update(show_results_after_each_question=1),
+    lambda d: d["r1b"].update(show_results_after_each_question="false"),
 ])
 def test_invalid_rules_are_rejected(change):
     data = json.loads(configured().snapshot_json())

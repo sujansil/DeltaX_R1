@@ -1,7 +1,8 @@
 from datetime import timedelta
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from time import perf_counter
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -9,17 +10,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
 from ..dependencies import require_player
-from ..models import (Question, R1BDraft, R1BTimerMode, Round, RoundStatus,
+from ..models import (Question, R1BDraft, R1BReceipt, R1BTimerMode, Round, RoundStatus,
                       ScoreEvent, Submission, TeamRoundState)
 from ..scoring import numeric_correct
 from ..timing import elapsed_ms, utc_now
 from ..round_locking import lock_round
 from ..player_sessions import authorize_session
-from ..r1b_finalization import effective_remaining_ms, finalize_expired_team
+from ..r1b_finalization import effective_remaining_ms, expiry_deadline, finalize_expired_team
 from ..competition_rules import round_rules
 
 router = APIRouter(prefix="/api/r1b", tags=["round-1b"])
 class SubmitNumeric(BaseModel):
+    # Optional only for backwards-compatible internal callers; an absent value
+    # never matches an active turn and is rejected by the endpoint.
+    turn_id: str | None = Field(default=None, min_length=36, max_length=36)
     answer: str | None = None
     skip: bool = False
 
@@ -97,11 +101,6 @@ def serialize_state(state: TeamRoundState, round_obj: Round, now):
     }
 
 
-def require_turn_slot(user, state: TeamRoundState):
-    if user.get("slot") is not None and user["slot"] != state.current_player:
-        raise HTTPException(403, f"Relay slot {state.current_player} owns the active turn")
-
-
 @router.get("/state")
 async def state(user=Depends(require_player), db: AsyncSession = Depends(get_db)):
     round_obj = await require_live_round(db, allow_paused=True, locked=True)
@@ -122,7 +121,6 @@ async def start_team(user=Depends(require_player), db: AsyncSession = Depends(ge
         await authorize_session(db, user, "R1B", lock=True)
     async with db.begin_nested():
         team_state = await locked_state(db, user["team_id"], round_obj)
-        require_turn_slot(user, team_state)
         if team_state.team_started_at:
             response = {"ok": True, "already_started": True}
         else:
@@ -149,7 +147,6 @@ async def ready(user=Depends(require_player), db: AsyncSession = Depends(get_db)
     expired = False
     async with db.begin_nested():
         team_state = await locked_state(db, user["team_id"], round_obj)
-        require_turn_slot(user, team_state)
         now = utc_now()
         if team_state.turn_status != "WAITING":
             raise HTTPException(409, "The team is not waiting for READY")
@@ -181,7 +178,6 @@ async def question(user=Depends(require_player), db: AsyncSession = Depends(get_
     now = utc_now()
     if not team_state or team_state.turn_status != "ACTIVE":
         raise HTTPException(409, "There is no active relay question")
-    require_turn_slot(user, team_state)
     if (await finalize_expired_team(db, round_obj, team_state, now)).expired:
         await db.commit()
         raise HTTPException(409, "Team time has expired")
@@ -211,7 +207,6 @@ async def get_draft(user=Depends(require_player), db: AsyncSession = Depends(get
     if user.get("sid"):
         await authorize_session(db, user, "R1B", lock=True)
     team_state = await locked_state(db, user["team_id"], round_obj)
-    require_turn_slot(user, team_state)
     now = utc_now()
     await finalize_expired_team(db, round_obj, team_state, now)
     if team_state.turn_status != "ACTIVE" or not team_state.current_turn_id:
@@ -240,7 +235,6 @@ async def save_draft(data: SaveDraft, user=Depends(require_player),
     if user.get("sid"):
         await authorize_session(db, user, "R1B", lock=True)
     team_state = await locked_state(db, user["team_id"], round_obj)
-    require_turn_slot(user, team_state)
     now = utc_now()
     if (await finalize_expired_team(db, round_obj, team_state, now)).expired:
         await db.commit()
@@ -268,73 +262,125 @@ async def save_draft(data: SaveDraft, user=Depends(require_player),
             "answer": data.answer, "accepted_at": now}
 
 
+async def resolve_receipt(db: AsyncSession, receipt: R1BReceipt, round_obj: Round,
+                          team_state: TeamRoundState):
+    """Resolve a registered receipt while the caller owns the team-state lock."""
+    if receipt.status != "PENDING":
+        return receipt
+    now = utc_now()
+    if (team_state.turn_status != "ACTIVE"
+            or team_state.current_turn_id != receipt.turn_id
+            or team_state.current_question_position != receipt.question_position
+            or team_state.current_player != receipt.player_number):
+        receipt.status = "REJECTED"; receipt.rejection_code = "STALE_TURN"; receipt.resolved_at = now
+        return receipt
+    if receipt.received_at >= receipt.team_deadline:
+        receipt.status = "REJECTED"; receipt.rejection_code = "DEADLINE"; receipt.resolved_at = now
+        return receipt
+    q = await db.scalar(select(Question).where(
+        Question.round_code == "R1B", Question.position == receipt.question_position,
+        Question.enabled.is_(True)))
+    if not q:
+        receipt.status = "REJECTED"; receipt.rejection_code = "QUESTION"; receipt.resolved_at = now
+        return receipt
+    rules = round_rules(round_obj).r1b
+    if receipt.action == "SKIP":
+        result, points = "SKIPPED", rules.skip_unanswered_score
+    else:
+        correct = numeric_correct(receipt.answer_text, q.correct_numeric, q.tolerance_abs, q.tolerance_rel)
+        result, points = (("CORRECT", rules.correct_score) if correct else ("WRONG", rules.wrong_score))
+    submission_id = await db.scalar(insert(Submission).values(
+        team_id=receipt.team_id, round_code="R1B", question_position=receipt.question_position,
+        player_number=receipt.player_number, answer_text=receipt.answer_text,
+        submitted_at=receipt.received_at, recorded_at=now,
+        elapsed_ms=elapsed_ms(receipt.turn_ready_at, receipt.received_at),
+        result=result, points=points,
+        finalization_source="SKIP" if receipt.action == "SKIP" else "MANUAL",
+    ).on_conflict_do_nothing(constraint="uq_team_round_question").returning(Submission.id))
+    if submission_id is None:
+        receipt.status = "REJECTED"; receipt.rejection_code = "DUPLICATE"; receipt.resolved_at = now
+        return receipt
+    db.add(ScoreEvent(team_id=receipt.team_id, round_code="R1B", submission_id=submission_id,
+                      reason=f"R1B_Q{receipt.question_position}_{result}", points=points))
+    if rules.show_results_after_each_question:
+        from ..question_reveal import R1B_TURN_KIND
+        from ..services import LeaderboardService
+        await LeaderboardService().publish(
+            db, "R1B", kind=R1B_TURN_KIND,
+            metadata={"team_id": receipt.team_id, "turn_id": receipt.turn_id,
+                      "question_position": receipt.question_position})
+    remaining = max(0, int((receipt.team_deadline - receipt.received_at).total_seconds() * 1000))
+    team_state.remaining_time_ms = remaining
+    team_state.clock_running_since = None
+    team_state.team_deadline = None
+    if receipt.question_position >= rules.turn_count:
+        team_state.turn_status = "FINISHED"; team_state.finished_at = now
+    else:
+        team_state.current_player += 1
+        team_state.current_question_position += 1
+        team_state.turn_status = "WAITING"
+        team_state.ready_at = None
+        if round_obj.r1b_timer_mode == R1BTimerMode.CONTINUOUS.value:
+            run_clock(team_state, receipt.received_at)
+    team_state.current_turn_id = None
+    receipt.status = "ACCEPTED"; receipt.submission_id = submission_id; receipt.resolved_at = now
+    return receipt
+
+
 @router.post("/submit")
-async def submit(data: SubmitNumeric, user=Depends(require_player), db: AsyncSession = Depends(get_db)):
+async def submit(data: SubmitNumeric, user=Depends(require_player), db: AsyncSession = Depends(get_db),
+                 request: Request = None):
+    if not data.turn_id:
+        raise HTTPException(409, "An immutable relay turn ID is required")
+    timing = request.scope.get("r1b_timing", {}) if request else {}
+    received_at = (request.scope.get("r1b_received_at") if request else None) or utc_now()
+    waited = perf_counter(); await db.connection()
+    timing["db_pool_wait_ms"] = (perf_counter() - waited) * 1000
+    waited = perf_counter()
     round_obj = await require_live_round(db, locked=True)
+    timing["lock_wait_ms"] = (perf_counter() - waited) * 1000
     if user.get("sid"):
         await authorize_session(db, user, "R1B", lock=True)
-    expired = False
-    response = None
-    async with db.begin_nested():
-        team_state = await locked_state(db, user["team_id"], round_obj)
-        require_turn_slot(user, team_state)
-        now = utc_now()
-        if team_state.turn_status != "ACTIVE":
-            raise HTTPException(409, "The team does not have an active turn")
-        if (await finalize_expired_team(db, round_obj, team_state, now)).expired:
-            expired = True
-        else:
-            remaining = freeze_clock(team_state, now)
-            position = team_state.current_question_position
-            q = (await db.execute(select(Question).where(
-                Question.round_code == "R1B", Question.position == position,
-                Question.enabled.is_(True),
-            ))).scalar_one_or_none()
-            if not q:
-                raise HTTPException(503, "The current question is not configured")
-
-            if data.skip:
-                result, points = "SKIPPED", round_rules(round_obj).r1b.skip_unanswered_score
-            else:
-                correct = numeric_correct(data.answer, q.correct_numeric,
-                                          q.tolerance_abs, q.tolerance_rel)
-                rules = round_rules(round_obj).r1b
-                result, points = (("CORRECT", rules.correct_score)
-                                  if correct else ("WRONG", rules.wrong_score))
-            submission_id = (await db.execute(insert(Submission).values(
-                team_id=user["team_id"], round_code="R1B", question_position=position,
-                player_number=team_state.current_player, answer_text=data.answer,
-                submitted_at=now, recorded_at=now,
-                elapsed_ms=elapsed_ms(team_state.ready_at, now),
-                result=result, points=points,
-                finalization_source="SKIP" if data.skip else "MANUAL",
-            ).on_conflict_do_nothing(
-                constraint="uq_team_round_question"
-            ).returning(Submission.id))).scalar_one_or_none()
-            if submission_id is None:
-                raise HTTPException(409, "Turn already finished")
-            db.add(ScoreEvent(team_id=user["team_id"], round_code="R1B",
-                              submission_id=submission_id,
-                              reason=f"R1B_Q{position}_{result}", points=points))
-
-            if position >= round_rules(round_obj).r1b.turn_count:
-                team_state.turn_status = "FINISHED"
-                team_state.finished_at = now
-                next_player = None
-            else:
-                team_state.current_player += 1
-                team_state.current_question_position += 1
-                team_state.turn_status = "WAITING"
-                team_state.ready_at = None
-                if round_obj.r1b_timer_mode == R1BTimerMode.CONTINUOUS.value:
-                    # Normalize at the submit instant, then continue through handover.
-                    team_state.remaining_time_ms = remaining
-                    run_clock(team_state, now)
-                next_player = team_state.current_player
-            team_state.current_turn_id = None
-            response = {"position": position, "result": result,
-                        "points": points, "next_player": next_player}
+    team_state = await locked_state(db, user["team_id"], round_obj)
+    deadline = expiry_deadline(team_state)
+    eligible = bool(team_state.turn_status == "ACTIVE" and team_state.current_turn_id == data.turn_id
+                    and team_state.ready_at and deadline and received_at < deadline)
+    receipt = R1BReceipt(
+        team_id=user["team_id"], session_id=user.get("sid") or "", turn_id=data.turn_id,
+        question_position=team_state.current_question_position,
+        player_number=team_state.current_player, action="SKIP" if data.skip else "SUBMIT",
+        answer_text=data.answer, received_at=received_at,
+        turn_ready_at=team_state.ready_at or received_at,
+        team_deadline=deadline or received_at,
+        status="PENDING" if eligible else "REJECTED", resolved_at=None if eligible else utc_now(),
+        rejection_code=None if eligible else ("STALE_TURN" if team_state.current_turn_id != data.turn_id else "DEADLINE"),
+    )
+    db.add(receipt); wrote = perf_counter(); await db.commit()
+    timing["admission_commit_ms"] = (perf_counter() - wrote) * 1000
+    if not eligible:
+        raise HTTPException(409, "Turn is stale, closed, or past its deadline")
+    waited = perf_counter(); await db.connection()
+    timing["db_pool_wait_ms"] += (perf_counter() - waited) * 1000
+    round_obj = await require_live_round(db, locked=True)
+    team_state = await locked_state(db, user["team_id"], round_obj)
+    receipt = await db.scalar(select(R1BReceipt).where(R1BReceipt.id == receipt.id)
+                              .with_for_update().execution_options(populate_existing=True))
+    await resolve_receipt(db, receipt, round_obj, team_state)
+    wrote = perf_counter()
     await db.commit()
-    if expired:
-        raise HTTPException(409, "Team time has expired; late answers are not accepted")
+    timing["write_commit_ms"] = (perf_counter() - wrote) * 1000
+    if receipt.status != "ACCEPTED":
+        raise HTTPException(409, "Turn already finished")
+    response = {"position": receipt.question_position, "accepted": True,
+                "message": "Answer recorded",
+                "next_player": team_state.current_player if team_state.turn_status == "WAITING" else None}
+    if round_rules(round_obj).r1b.show_results_after_each_question:
+        from ..question_reveal import read_leaderboard
+        board = await read_leaderboard(db, "R1B", user["team_id"], include_intermediate=True)
+        submission = await db.get(Submission, receipt.submission_id)
+        response.update({"result": submission.result, "points": submission.points,
+                         "score_total": board["mine"]["score"] if board.get("mine") else None,
+                         "rank": board["mine"]["rank"] if board.get("mine") else None,
+                         "provisional": True,
+                         "publication_id": board.get("publication_id")})
     return response

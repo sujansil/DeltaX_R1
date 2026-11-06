@@ -4,11 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import (Question, R1BDraft, Round, RoundStatus, ScoreEvent,
+from .models import (Question, R1BDraft, R1BReceipt, Round, RoundStatus, ScoreEvent,
                      Submission, TeamRoundState)
 from .round_locking import lock_round
 from .scoring import numeric_correct
@@ -48,6 +48,20 @@ async def finalize_expired_team(
     if state.turn_status in ("FINISHED", "EXPIRED") or state.clock_started_at is None:
         return FinalizationResult(False)
     deadline = expiry_deadline(state)
+    # A receipt committed under the shared Round lock is an admitted manual
+    # action. Resolve it before consulting an older autosaved draft. This also
+    # makes worker restart recovery deterministic.
+    pending = (await db.scalars(select(R1BReceipt).where(
+        R1BReceipt.team_id == state.team_id,
+        R1BReceipt.turn_id == state.current_turn_id,
+        R1BReceipt.status == "PENDING",
+    ).order_by(R1BReceipt.id).with_for_update())).all()
+    if pending:
+        from .api.r1b import resolve_receipt
+        for receipt in pending:
+            await resolve_receipt(db, receipt, round_obj, state)
+            if receipt.status == "ACCEPTED":
+                return FinalizationResult(False, True, deadline)
     if deadline is None or processing_time < deadline or effective_remaining_ms(state, processing_time) > 0:
         return FinalizationResult(False, deadline=deadline)
 
@@ -92,6 +106,13 @@ async def finalize_expired_team(
                 created_at=processing_time,
             ))
             outcome_created = True
+            if round_rules(round_obj).r1b.show_results_after_each_question:
+                from .question_reveal import R1B_TURN_KIND
+                from .services import LeaderboardService
+                await LeaderboardService().publish(
+                    db, "R1B", kind=R1B_TURN_KIND,
+                    metadata={"team_id": state.team_id, "turn_id": state.current_turn_id,
+                              "question_position": position})
         source_for_state = source
     else:
         # CONTINUOUS can expire between turns. The next question was never revealed.
@@ -119,7 +140,14 @@ async def reconcile_r1b_batch(db: AsyncSession, *, batch_size: int = 100) -> int
         TeamRoundState.turn_status.in_(("ACTIVE", "WAITING")),
         TeamRoundState.clock_running_since.is_not(None),
         TeamRoundState.team_deadline.is_not(None),
-        TeamRoundState.team_deadline <= now,
+        or_(
+            TeamRoundState.team_deadline <= now,
+            exists(select(R1BReceipt.id).where(
+                R1BReceipt.team_id == TeamRoundState.team_id,
+                R1BReceipt.turn_id == TeamRoundState.current_turn_id,
+                R1BReceipt.status == "PENDING",
+            )),
+        ),
     ).order_by(TeamRoundState.team_deadline, TeamRoundState.id)
       .limit(batch_size).with_for_update(skip_locked=True))).all()
     finalized = 0

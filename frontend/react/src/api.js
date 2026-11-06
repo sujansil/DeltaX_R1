@@ -24,5 +24,10 @@ export async function api(path, {token, method='GET', body, signal, timeout=1200
 }
 export const formatScore=n=>Number(n??0).toLocaleString('en-IN');
 export function formatTime(ms) {const s=Math.ceil(Math.max(0,ms)/1000);return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;}
+export function autoRevealSeconds(phase, elapsedMs=0) {
+  if(!phase?.next_reveal_at)return null;
+  const remaining=Math.max(0,Number(phase.remaining_ms||0)-(phase.frozen?0:Math.max(0,elapsedMs)));
+  return Math.ceil(remaining/1000);
+}
 export function outcomeKey(s) {const o=s?.own_outcome;return o?.finalized&&o.score_revealed!==false&&o.points!==null&&o.submission_id?`${s.identity.round_code}:${o.submission_id}`:null;}
 export function revealAllowed(s) {return !!s&&!['ACTIVE','ACTIVE_UNANSWERED','ACTIVE_ACCEPTED','PAUSED'].includes(s.player_state.screen)&&!s.question;}

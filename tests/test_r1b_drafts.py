@@ -139,15 +139,14 @@ async def test_clear_is_latest_and_stale_versions_or_turns_cannot_overwrite(monk
         assert (outcome.result, outcome.points, outcome.draft_version) == ("UNANSWERED", 0, 3)
 
 
-async def test_only_current_slot_and_team_can_access_draft():
+async def test_shared_session_and_cross_team_draft_access():
     require_disposable_test_database()
     from app.api import r1b
     from app.db import SessionLocal
     await reset_data(); team_id, other_id, turn_id, _ = await seed_active()
     async with SessionLocal() as db:
-        with pytest.raises(HTTPException) as wrong_slot:
-            await r1b.get_draft({"team_id": team_id, "slot": 2}, db)
-        assert wrong_slot.value.status_code == 403
+        draft = await r1b.get_draft({"team_id": team_id, "slot": 2}, db)
+        assert draft["turn_id"] == turn_id
     async with SessionLocal() as db:
         with pytest.raises(HTTPException):
             await r1b.get_draft({"team_id": other_id, "slot": 1}, db)
@@ -163,9 +162,10 @@ async def test_delayed_autosave_cannot_change_manual_submit_or_skip(skip):
     await reset_data(); team_id, _, turn_id, _ = await seed_active()
     await save(team_id, turn_id, 1, "41")
     async with SessionLocal() as db:
-        result = await r1b.submit(r1b.SubmitNumeric(answer="42", skip=skip),
+        result = await r1b.submit(r1b.SubmitNumeric(turn_id=turn_id, answer="42", skip=skip),
                                   {"team_id": team_id, "slot": 1}, db)
-        assert result["result"] == ("SKIPPED" if skip else "CORRECT")
+        assert result == {"position": 1, "accepted": True, "message": "Answer recorded",
+                          "next_player": 2}
     with pytest.raises(HTTPException):
         await save(team_id, turn_id, 2, "0")
     async with SessionLocal() as db:
@@ -174,6 +174,35 @@ async def test_delayed_autosave_cannot_change_manual_submit_or_skip(skip):
         assert outcome.finalization_source == ("SKIP" if skip else "MANUAL")
         assert await db.scalar(select(func.count()).select_from(Submission)) == 1
         assert await db.scalar(select(func.count()).select_from(ScoreEvent)) == 1
+
+
+async def test_r1b_per_turn_visibility_true_uses_one_provisional_snapshot():
+    require_disposable_test_database()
+    from dataclasses import replace
+    from app.api import r1b
+    from app.competition_rules import configured_rules
+    from app.db import SessionLocal
+    from app.models import LeaderboardSnapshot, Round
+    await reset_data(); team_id, _, turn_id, _ = await seed_active()
+    async with SessionLocal() as db:
+        round_obj = await db.scalar(select(Round).where(Round.code == "R1B"))
+        rules = configured_rules()
+        rules = replace(rules, r1b=replace(
+            rules.r1b, show_results_after_each_question=True))
+        round_obj.rules_version = rules.version
+        round_obj.rules_snapshot = rules.snapshot_json()
+        await db.commit()
+    async with SessionLocal() as db:
+        response = await r1b.submit(
+            r1b.SubmitNumeric(turn_id=turn_id, answer="42"), {"team_id": team_id}, db)
+    assert response["result"] == "CORRECT"
+    assert response["points"] == configured_rules().r1b.correct_score
+    assert response["score_total"] == configured_rules().r1b.correct_score
+    assert response["rank"] == 1 and response["provisional"] is True
+    async with SessionLocal() as db:
+        snapshot = await db.scalar(select(LeaderboardSnapshot).where(
+            LeaderboardSnapshot.round_code == "R1B"))
+        assert '"kind": "R1B_TURN_REVEAL_V1"' in snapshot.data_json
 
 
 async def test_concurrent_workers_are_idempotent_and_question_stays_closed(monkeypatch):

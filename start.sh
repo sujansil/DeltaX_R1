@@ -202,7 +202,7 @@ start_preview() {
   printf 'Starting this Round 1 project from %s on 127.0.0.1:8000...\n' "${PROJECT_DIR}"
   (
     cd "${PROJECT_DIR}" || exit 1
-    nohup "${PROJECT_DIR}/.venv/bin/uvicorn" app.main:app --host 127.0.0.1 --port 8000 \
+    nohup "${PROJECT_DIR}/.venv/bin/uvicorn" app.main:app --host 0.0.0.0 --port 8000 \
       >>"${APP_LOG}" 2>&1 &
     printf '%s\n' "$!" >"${PID_FILE}"
   )

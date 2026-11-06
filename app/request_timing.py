@@ -19,7 +19,9 @@ class R1AReceiptTimingMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("method") != "POST" or scope.get("path") != "/api/r1a/submit":
+        path = scope.get("path")
+        if (scope["type"] != "http" or scope.get("method") != "POST"
+                or path not in ("/api/r1a/submit", "/api/r1b/submit")):
             await self.app(scope, receive, send)
             return
         messages = []
@@ -28,9 +30,10 @@ class R1AReceiptTimingMiddleware:
             messages.append(message)
             if message["type"] == "http.disconnect" or not message.get("more_body", False):
                 break
-        scope["r1a_received_at"] = utc_now()
+        prefix = "r1a" if path == "/api/r1a/submit" else "r1b"
+        scope[f"{prefix}_received_at"] = utc_now()
         receipt_clock = perf_counter()
-        scope["r1a_timing"] = {}
+        scope[f"{prefix}_timing"] = {}
 
         async def replay():
             if messages:
@@ -42,7 +45,7 @@ class R1AReceiptTimingMiddleware:
             nonlocal status
             if message["type"] == "http.response.start":
                 status = message["status"]
-                timing = scope["r1a_timing"]
+                timing = scope[f"{prefix}_timing"]
                 total = (perf_counter() - receipt_clock) * 1000
                 values = {key: round(value, 3) for key, value in timing.items()}
                 values["receipt_to_response_ms"] = round(total, 3)
@@ -51,7 +54,7 @@ class R1AReceiptTimingMiddleware:
                     f'{name.replace("_ms", "")};dur={value}' for name, value in values.items())
                 headers.append((b"server-timing", server_timing.encode("ascii")))
                 message = {**message, "headers": headers}
-                logger.info("r1a_submit_latency status=%s %s", status,
+                logger.info("%s_submit_latency status=%s %s", prefix, status,
                             " ".join(f"{key}={value}" for key, value in values.items()))
             await send(message)
 

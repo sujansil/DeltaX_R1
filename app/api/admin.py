@@ -140,6 +140,22 @@ async def reconcile_due_r1b_locked(db, round_obj, now):
             await finalize_expired_team(db, round_obj, state, now)
     return len(states)
 
+
+async def resolve_pending_r1b_locked(db, round_obj):
+    """Resolve admissions that committed before an exclusive admin transition."""
+    from ..models import R1BReceipt
+    from .r1b import resolve_receipt
+    receipts = (await db.scalars(select(R1BReceipt).where(
+        R1BReceipt.status == "PENDING"
+    ).order_by(R1BReceipt.id).with_for_update())).all()
+    for receipt in receipts:
+        state = await db.scalar(select(TeamRoundState).where(
+            TeamRoundState.team_id == receipt.team_id,
+            TeamRoundState.round_code == "R1B").with_for_update())
+        if state:
+            await resolve_receipt(db, receipt, round_obj, state)
+    return len(receipts)
+
 @router.post("/bootstrap")
 async def bootstrap(username: str="admin", password: str="change-me-now", db: AsyncSession=Depends(get_db)):
     if settings.environment != "development":
@@ -255,6 +271,7 @@ async def pause_round(data: RoundAction, user=Depends(require_admin), db: AsyncS
     if r.code == "R1A" and r.status == RoundStatus.LIVE.value:
         await reconcile_r1a(db, locked_round=r)
     if r.code == "R1B" and r.status == RoundStatus.LIVE.value:
+        await resolve_pending_r1b_locked(db, r)
         await reconcile_due_r1b_locked(db, r, utc_now())
     if r.status != RoundStatus.LIVE.value:
         await db.commit()
@@ -598,6 +615,7 @@ async def end_round(data: RoundAction, user=Depends(require_admin), db: AsyncSes
         await reconcile_r1a(db, locked_round=r)
     now = utc_now()
     if r.code == "R1B" and r.status in (RoundStatus.LIVE.value, RoundStatus.PAUSED.value):
+        await resolve_pending_r1b_locked(db, r)
         await reconcile_due_r1b_locked(db, r, now)
     if r.status not in (RoundStatus.LIVE.value, RoundStatus.PAUSED.value):
         await db.commit()
@@ -626,8 +644,12 @@ async def publish(data: RoundAction, user=Depends(require_admin), db: AsyncSessi
     r = await lock_round(db, data.round_code, exclusive=True)
     if not r:
         raise admin_error(404, "ROUND_NOT_FOUND", "Round not found")
+    if r.status != RoundStatus.ENDED.value:
+        raise admin_error(409, "FINAL_PUBLICATION_REQUIRES_ENDED_ROUND",
+                          "End the round before publishing final results")
+    from ..question_reveal import FINAL_KIND
     service = LeaderboardService()
-    snap, data_out = await service.publish(db, data.round_code)
+    snap, data_out = await service.publish(db, data.round_code, kind=FINAL_KIND)
     r.leaderboard_published_at = snap.published_at
     await audit(db, user, "PUBLISH_LEADERBOARD",
                 f"round={data.round_code};publication_id={snap.id}")
@@ -1033,8 +1055,12 @@ async def revoke_rows(db, team_id, session_id, reason, user):
     if session_id:
         query = query.where(PlayerDevice.session_id == session_id)
     round_codes = sorted(set((await db.scalars(query)).all()))
+    locked_rounds = []
     for code in round_codes:
-        await lock_round(db, code, exclusive=True)
+        locked_rounds.append(await lock_round(db, code, exclusive=True))
+    for round_obj in locked_rounds:
+        if round_obj and round_obj.code == "R1B":
+            await resolve_pending_r1b_locked(db, round_obj)
     await db.execute(select(Team).where(Team.id == team_id).with_for_update())
     rows_query = select(PlayerDevice).where(PlayerDevice.team_id == team_id)
     if session_id:

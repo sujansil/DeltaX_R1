@@ -216,3 +216,26 @@ async def test_concurrent_publication_is_immutable_and_audited():
         assert await db.scalar(select(func.count()).select_from(LeaderboardSnapshot)) == 2
         assert await db.scalar(select(func.count()).select_from(AdminAction).where(
             AdminAction.admin_id == admin_id, AdminAction.action == "PUBLISH_LEADERBOARD")) == 2
+
+
+async def test_final_publication_requires_ended_round_and_is_typed():
+    require_disposable_test_database()
+    from app.api import admin
+    from app.db import SessionLocal
+    from app.models import LeaderboardSnapshot, Round
+    await reset_data(); await seed_admin(); user = {"sub": "ops"}
+    async with SessionLocal() as db:
+        db.add(Round(code="R1B", status="LIVE")); await db.commit()
+    async with SessionLocal() as db:
+        with pytest.raises(HTTPException) as rejected:
+            await admin.publish(admin.RoundAction(round_code="R1B"), user, db)
+        assert rejected.value.status_code == 409
+        await db.rollback()
+    async with SessionLocal() as db:
+        round_obj = await db.scalar(select(Round).where(Round.code == "R1B"))
+        round_obj.status = "ENDED"; await db.commit()
+    async with SessionLocal() as db:
+        await admin.publish(admin.RoundAction(round_code="R1B"), user, db)
+    async with SessionLocal() as db:
+        snapshot = await db.scalar(select(LeaderboardSnapshot))
+        assert '"kind": "EXPLICIT_FINAL_PUBLICATION_V1"' in snapshot.data_json

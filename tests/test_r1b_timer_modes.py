@@ -61,8 +61,14 @@ def server_clock(monkeypatch, instant=T0):
 
 async def player_call(function, team_id, *args):
     from app.db import SessionLocal
+    from app.api import r1b
+    from app.models import TeamRoundState
 
     async with SessionLocal() as db:
+        if args and isinstance(args[0], r1b.SubmitNumeric) and not args[0].turn_id:
+            turn_id = await db.scalar(select(TeamRoundState.current_turn_id).where(
+                TeamRoundState.team_id == team_id))
+            args = (args[0].model_copy(update={"turn_id": turn_id}), *args[1:])
         return await function(*args, {"team_id": team_id}, db)
 
 

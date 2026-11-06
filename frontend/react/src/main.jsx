@@ -1,7 +1,7 @@
 import React,{useState,useEffect,useRef,useCallback,lazy,Suspense} from 'react';
 import {createRoot} from 'react-dom/client';
 import katex from 'katex';
-import {api,formatScore,formatTime,outcomeKey,revealAllowed} from './api.js';
+import {api,autoRevealSeconds,formatScore,formatTime,outcomeKey,revealAllowed} from './api.js';
 import {DraftQueue} from './draft-queue.mjs';
 import './style.css';
 const MathScene=lazy(()=>import('./MathScene.jsx'));
@@ -31,7 +31,7 @@ function Login({onLogin,notice,reduced}) {
    <div className="hero-wordmark"><Brand/><p>Small changes. Extraordinary outcomes.</p></div>
    <a className="scroll-cue" href="#credentials">Scroll to enter<span aria-hidden="true">↓</span></a>
   </section>
-  <section className="credential-section" id="credentials"><div className="credential-inner"><div className="section-number">01 / ENTER</div><h1>{activation?'Activate your team.':'Your team. Your next move.'}</h1><p className="muted">{activation?'Use the activation details shared by the organisers.':'Sign in when your team is ready. The server assigns your round and relay slot.'}</p>
+  <section className="credential-section" id="credentials"><div className="credential-inner"><div className="section-number">01 / ENTER</div><h1>{activation?'Activate your team.':'Your team. Your next move.'}</h1><p className="muted">{activation?'Use the activation details shared by the organisers.':'Sign in on your team device. In Math Rally, pass this same device between all four players.'}</p>
    {(notice||error)&&<div className="notice error" role="alert">{error||notice}</div>}{success&&<div className="notice" role="status">{success}</div>}
    <form onSubmit={submit} key={activation?'activation':'login'}>
     {activation?<><label>Team username<input name="username" required maxLength={120} autoComplete="username" autoCapitalize="none" spellCheck="false" placeholder="Your assigned username"/></label><label>Activation code<input name="activation" required maxLength={256} autoComplete="one-time-code" autoCapitalize="characters" spellCheck="false" placeholder="XXXX-XXXX"/></label></>:<label>Team username<input name="username" required maxLength={120} autoComplete="username" autoCapitalize="none" spellCheck="false" placeholder="Your assigned username"/></label>}
@@ -46,8 +46,9 @@ function Login({onLogin,notice,reduced}) {
 function useClock(snapshot){const [tick,setTick]=useState(0);useEffect(()=>{if(!snapshot?.timer.running)return;const id=setInterval(()=>setTick(x=>x+1),150);return()=>clearInterval(id)},[snapshot?.timer.running]);
  const t=snapshot?.timer;return t?Math.max(0,t.remaining_ms-(t.running?performance.now()-snapshot._received+(snapshot._transit||0):0)):0;
 }
+function useAutoRevealClock(snapshot){const phase=snapshot?.r1a_phase,[tick,setTick]=useState(0);useEffect(()=>{if(!phase?.next_reveal_at||phase.frozen)return;const id=setInterval(()=>setTick(x=>x+1),150);return()=>clearInterval(id)},[phase?.next_reveal_at,phase?.frozen]);const elapsed=phase?.frozen?0:performance.now()-snapshot._received+(snapshot._transit||0);return autoRevealSeconds(phase,elapsed);}
 function Timer({state,left}){const timer=state.timer,low=timer.running&&left<5000;return <div className={'timer '+(low?'time-low':'')}><span className="eyebrow">{timer.frozen?'CLOCK FROZEN':timer.mode==='QUESTION'?'TIME REMAINING':'TEAM TIME'}</span><span className="timer-value" role="timer" aria-label={`${formatTime(left)} remaining`}>{formatTime(left)}</span></div>}
-function RelaySteps({state}){if(state.identity.round_code!=='R1B')return null;const p=state.player_state.current_player,count=state.rules.r1b.turn_count;return <div className="relay-steps" aria-label={'Current relay player '+p}>{Array.from({length:count},(_,i)=>i+1).map(n=><span key={n} className={n===p?'current':n<p?'complete':''}><b>{n<p?'✓':String(n).padStart(2,'0')}</b><small>{n===state.identity.relay_slot?'YOU':`PLAYER ${n}`}</small></span>)}</div>}
+function RelaySteps({state}){if(state.identity.round_code!=='R1B')return null;const p=state.player_state.current_player,count=state.rules.r1b.turn_count;return <div className="relay-steps" aria-label={'Current relay player '+p}>{Array.from({length:count},(_,i)=>i+1).map(n=><span key={n} className={n===p?'current':n<p?'complete':''}><b>{n<p?'✓':String(n).padStart(2,'0')}</b><small>{`PLAYER ${n}`}</small></span>)}</div>}
 function NumericAnswer({state,request,onSubmit,busy,onError}){
  const initial=state.draft, [answer,setAnswer]=useState(initial?.answer||''),[status,setStatus]=useState(initial?.version?'Draft restored · saved':'Your draft saves automatically'),[conflict,setConflict]=useState(false);
  const queue=useRef(null),enabled=state.available_actions.includes('SAVE_DRAFT');
@@ -59,13 +60,13 @@ function NumericAnswer({state,request,onSubmit,busy,onError}){
   <div className="save-state" role="status"><span className={'status-dot '+(status.includes('Saved')||status.includes('saved')?'saved':'')}/>{status}</div>
   {conflict&&<button type="button" className="secondary full" onClick={()=>onError('Use Refresh above to restore the server draft. Copy any unsaved text first.')}>Draft conflict · see recovery instructions</button>}
   <div className="answer-actions"><button className="primary" disabled={!enabled||busy||conflict} type="submit">{busy?'Confirming…':'Submit answer'}<span aria-hidden="true">↗</span></button><button className="text-button" disabled={!enabled||busy} type="button" onClick={()=>onSubmit(answer,true)}>Skip this question</button></div>
-  <p className="micro-copy">At timeout, the last draft received by the server counts. Empty answers score zero; non-empty invalid answers count as wrong.</p>
+  <p className="micro-copy">{state.rules.r1b.show_results_after_each_question?'At timeout, the last draft received by the server counts. Empty answers score zero; non-empty invalid answers count as wrong.':'At timeout, the last draft received by the server is used.'}</p>
  </form>
 }
 function Question({state,left,request,mutate,busy,onError}) {
  const question=state.question,[selected,setSelected]=useState(null),[confirmSkip,setConfirmSkip]=useState(null);
  const numeric=state.identity.round_code==='R1B';
- async function submitNumeric(answer,skip){if(skip){setConfirmSkip(answer);return;}await mutate('/api/r1b/submit',{answer,skip:false});}
+ async function submitNumeric(answer,skip){if(skip){setConfirmSkip(answer);return;}await mutate('/api/r1b/submit',{turn_id:state.draft.turn_id,answer,skip:false});}
  return <section className="question-panel" key={question.id}>
   <div className="question-meta"><span className="eyebrow">{numeric?'MATH RALLY':'WIZTIME'} <span className="dim">/ {String(question.position).padStart(2,'0')} OF {String(numeric?state.rules.r1b.turn_count:state.rules.r1a.question_count).padStart(2,'0')}</span></span><Timer state={state} left={left}/></div>
   <div className="question-body"><h1><RichText text={question.text}/></h1><Diagram url={question.image_url}/></div>
@@ -73,43 +74,47 @@ function Question({state,left,request,mutate,busy,onError}) {
    <fieldset disabled={busy||left<=0}><legend className="sr-only">Choose one answer</legend>{question.options?.map((o,i)=><label key={o.id} className={'answer-option '+(selected===o.id?'selected':'')}><input aria-label={`${String.fromCharCode(65+i)}: ${o.text||'Image option'}`} type="radio" name="option" checked={selected===o.id} onChange={()=>setSelected(o.id)} value={o.id}/><span className="option-letter">{String.fromCharCode(65+i)}</span><span className="option-content"><RichText text={o.text}/><Diagram url={o.image_url} option/></span><span className="option-check" aria-hidden="true">{selected===o.id?'✓':''}</span></label>)}</fieldset>
    <button className="primary full submit-answer" disabled={busy||selected===null||left<=0}>{busy?'Confirming…':'Lock answer'}<span aria-hidden="true">↗</span></button><p className="micro-copy">One answer. No revisiting. Your answer must reach the server in time.</p>
   </form>}
-  {confirmSkip!==null&&<Confirm title="Skip this question?" text="This ends your turn permanently and scores zero." onCancel={()=>setConfirmSkip(null)} onConfirm={()=>{const a=confirmSkip;setConfirmSkip(null);mutate('/api/r1b/submit',{answer:a,skip:true})}}/>}
+  {confirmSkip!==null&&<Confirm title="Skip this question?" text={state.rules.r1b.show_results_after_each_question?'This ends your turn permanently and scores zero.':'This ends your turn permanently.'} onCancel={()=>setConfirmSkip(null)} onConfirm={()=>{const a=confirmSkip;setConfirmSkip(null);mutate('/api/r1b/submit',{turn_id:state.draft.turn_id,answer:a,skip:true})}}/>}
  </section>;
 }
 const screenCopy={
  NOT_STARTED:['Before the first move.','Waiting for the organisers to open your round.'],
  ACTIVE_ACCEPTED:['Answer locked.','Your answer is safely recorded. Results appear when this question closes.'],
  BETWEEN_QUESTIONS:['A moment between moves.','The finalized leaderboard stays on screen until the next question opens.'],
- WAITING_TURN:['Your moment is coming.','Another player has the active turn. Keep this page open.'],
- HANDOVER_READY:['Take your place.','Your question stays hidden until you are ready.'],
+ WAITING_TURN:['Pass the team device.','The next player continues on this same device.'],
+ HANDOVER_READY:['Pass to the next player.','The next question stays hidden until that player presses READY.'],
  PAUSED:['A pause in the pattern.','The organiser has paused this round. Your clock is frozen.'],
- FINISHED:['Four moves. One team.','Your relay is complete. Wait for the published standings.'],
+ FINISHED:['Relay complete.','Please wait.'],
  EXPIRED:['Time has run its course.','Your budget is exhausted. Any eligible saved answer is finalized by the server.'],
  ENDED:['This chapter is complete.','The round has ended. Recorded results are preserved.']};
-function Waiting({state,left,mutate,busy}) {const screen=state.player_state.screen,copy=screenCopy[screen]||['Synchronising…','Checking the current state.'],actions=state.available_actions;
+function Waiting({state,left,mutate,busy}) {const screen=state.player_state.screen,copy=[...(screenCopy[screen]||['Synchronising…','Checking the current state.'])],actions=state.available_actions;
+ if(state.identity.round_code==='R1A'&&screen==='ACTIVE_ACCEPTED'&&!state.rules.r1a.show_results_after_each_question)copy[1]='Your answer is safely recorded.';
  return <section className="waiting-panel"><div className="waiting-art" aria-hidden="true"><svg viewBox="0 0 300 140">{Array.from({length:8},(_,i)=><path key={i} d={`M 0 ${70+i*5} Q 75 ${-30+i*8} 150 70 T 300 ${70-i*4}`}/>)}</svg></div>
  <span className="eyebrow">{state.identity.round_code==='R1A'?'WIZTIME':'MATH RALLY'} / {screen==='PAUSED'?'PAUSED':state.player_state.turn_status||'ROUND 01'}</span><h1>{copy[0]}</h1><p>{copy[1]}</p>
+ {state.identity.round_code==='R1B'&&state.own_outcome.finalized&&!state.own_outcome.score_revealed&&<p className="ready-note">Answer recorded.</p>}
  {state.identity.round_code==='R1B'&&<RelaySteps state={state}/>}
  {screen==='ACTIVE_ACCEPTED'&&<Timer state={state} left={left}/>}
  {state.identity.round_code==='R1B'&&!['NOT_STARTED','FINISHED','ENDED','EXPIRED'].includes(screen)&&<><Timer state={state} left={left}/><p className="micro-copy">{state.timer.mode==='CONTINUOUS'?'Continuous mode: handovers use team time unless globally paused.':'Handover pause: time runs only while a question is active.'}</p></>}
  {actions.includes('START')&&<button className="primary full" disabled={busy} onClick={()=>mutate('/api/r1b/start',{})}>Prepare relay <span aria-hidden="true">↗</span></button>}
- {actions.includes('READY')&&<><p className="ready-note">Player {state.identity.relay_slot} · Ready reveals your question{!state.player_state.clock_started_at?` and starts the ${formatTime(state.rules.r1b.total_answering_budget_ms)} clock`:state.timer.frozen?' and resumes the clock':''}.</p><button className="primary full" disabled={busy} onClick={()=>mutate('/api/r1b/ready',{})}>{busy?'Opening…':'Ready · reveal my question'}<span aria-hidden="true">↗</span></button></>}
+ {actions.includes('READY')&&<><p className="ready-note">Player {state.player_state.current_player}: take the shared device. READY reveals your question{!state.player_state.clock_started_at?` and starts the ${formatTime(state.rules.r1b.total_answering_budget_ms)} clock`:state.timer.frozen?' and resumes the clock':''}.</p><button className="primary full" disabled={busy} onClick={()=>mutate('/api/r1b/ready',{})}>{busy?'Opening…':`Player ${state.player_state.current_player} · READY`}<span aria-hidden="true">↗</span></button></>}
  {screen==='ENDED'&&<p className="micro-copy">Moving to R1B? Log out, then sign in again for a new round-scoped session.</p>}
  </section>;
 }
+function AutoBetween({state}){const seconds=useAutoRevealClock(state);if(seconds===null)return <section className="waiting-panel"><h1>Preparing next question…</h1></section>;return <section className="waiting-panel"><h1>{state.r1a_phase.frozen?`Paused · Next question starts in ${seconds}s`:`Next question starts in ${seconds}s`}</h1></section>}
 function QuestionLeaderboard({state}) {
  const board=state.leaderboard;
+ const r1b=state.identity.round_code==='R1B';
  return <section className="question-leaderboard" aria-label="Question leaderboard">
-  <span className="eyebrow">WIZTIME / QUESTION CLOSED</span>
-  <h1>Leaderboard</h1>
-  <p className="board-intro">{board?.published?`After question ${String(board.after_question).padStart(2,'0')}`:'Finalising the question results…'}</p>
+  <span className="eyebrow">{r1b?'MATH RALLY / PUBLISHED RESULTS':'WIZTIME / QUESTION CLOSED'}</span>
+  <h1>{r1b?'R1B results':'Leaderboard'}</h1>
+  <p className="board-intro">{board?.published?(r1b?'Immutable administrator publication':`After question ${String(board.after_question).padStart(2,'0')}`):'Finalising the results…'}</p>
   {board?.published&&<>
    <div className="board-table-wrap" tabIndex="0" aria-label={`Published leaderboard, ${board.data.length} teams`}><table><thead><tr><th scope="col">Rank</th><th scope="col">Team</th><th scope="col">Score</th></tr></thead><tbody>{board.data.map(row=><tr key={row.team_id} className={row.team_id===state.identity.team_id?'my-team':''}><td>#{row.rank}</td><th scope="row">{row.team_name}{row.team_id===state.identity.team_id&&<small>You</small>}</th><td>{formatScore(row.score)}</td></tr>)}</tbody></table></div>
    {!board.data.length&&<p className="micro-copy">No enrolled teams in this snapshot.</p>}
    {board.mine&&!board.data.some(row=>row.team_id===state.identity.team_id)&&<div className="own-standing"><span>Your team · #{board.mine.rank}</span><strong>{formatScore(board.mine.score)} pts</strong></div>}
-   <p className="micro-copy">{board.data.length>5?'Scroll inside the table to see lower ranks. ':''}{board.total_teams>16?'Top 16 shown. ':board.data.length?`All ${board.data.length} ranked teams shown. `:''}Updated automatically when the question closes.</p>
+   <p className="micro-copy">{board.data.length>5?'Scroll inside the table to see lower ranks. ':''}{board.total_teams>16?'Top 16 shown. ':board.data.length?`All ${board.data.length} ranked teams shown. `:''}{r1b?'Only an administrator publication changes these values.':'Updated automatically when the question closes.'}</p>
   </>}
-  <p className="next-question-note">{state.round.status==='ENDED'?'WizTime is complete. Your recorded results are saved.':state.rules.r1a.advance_mode==='AUTO'?(state.r1a_phase?.frozen?'Automatic reveal is frozen while the round is paused.':`The next question opens automatically${state.r1a_phase?.remaining_ms>0?` in ${Math.ceil(state.r1a_phase.remaining_ms/1000)} seconds`:''}.`):'The next question opens when the organiser reveals it.'}</p>
+  <p className="next-question-note">{r1b?'These scores are from the latest published R1B snapshot.':board?.final?'WizTime is complete. Your recorded results are saved.':state.round.status==='ENDED'?'WizTime is complete. Your recorded results are saved.':'The next question opens when the organiser reveals it.'}</p>
  </section>;
 }
 function Confirm({title,text,onCancel,onConfirm}){const cancel=useRef(null);useEffect(()=>{cancel.current?.focus();const fn=e=>{if(e.key==='Escape')onCancel();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn)},[]);
@@ -141,7 +146,7 @@ function App(){
    if(c.total!==null)setReveal({...c,before:c.total-c.points});
   }
   // A reveal must never mask a new live question or an actionable handover.
-  if(data.question||data.available_actions.includes('READY'))setReveal(null);
+  if(data.question||(data.available_actions.includes('READY')&&!(data.identity.round_code==='R1B'&&data.rules.r1b.show_results_after_each_question)))setReveal(null);
   if(data.leaderboard){const b=data.leaderboard;setStanding({published:b.published,published_at:b.published_at,rank:b.mine?.rank??null,score:b.mine?.score??null});}
   current.current=data;setSnapshot(data);if(restoreRequested.current){setRestoreKey(x=>x+1);restoreRequested.current=false;}setNetwork('online');
  }
@@ -166,20 +171,27 @@ function App(){
   try{await request(path,{method:'POST',body});refresh.current();}
   catch(e){setError(e.message);refresh.current();}
   finally{busyRef.current=false;setBusy(false)}}
- async function logout(){if(busyRef.current)return;setLogoutConfirm(false);busyRef.current=true;setBusy(true);try{await request('/api/auth/team/logout',{method:'POST',body:{}});signOut('Signed out. Your relay slot is available again.')}catch(e){setError('Logout was not confirmed. '+e.message)}finally{busyRef.current=false;setBusy(false)}}
+ async function logout(){if(busyRef.current)return;setLogoutConfirm(false);busyRef.current=true;setBusy(true);try{await request('/api/auth/team/logout',{method:'POST',body:{}});signOut('Signed out. Your team device session is available again.')}catch(e){setError('Logout was not confirmed. '+e.message)}finally{busyRef.current=false;setBusy(false)}}
  const login=t=>{localStorage.setItem(TOKEN,t);first.current=true;candidate.current=null;current.current=null;setSnapshot(null);setToken(t);setNotice('');setError('');window.scrollTo(0,0)};
  if(!token)return <Login onLogin={login} notice={notice} reduced={reduced}/>;
  if(!snapshot)return <main className="connecting"><Brand small/><div className="loading-line"/><h1>Finding your place.</h1><p>{error||'Restoring your team, timer and current turn.'}</p><button className="secondary" onClick={()=>refresh.current()}>Retry connection</button><button className="text-button" onClick={()=>setLogoutConfirm(true)}>Log out</button>{logoutConfirm&&<Confirm title="Log out?" text="Release this session. Your progress stays saved." onCancel={()=>setLogoutConfirm(false)} onConfirm={logout}/>}</main>;
  const identity=snapshot.identity,ps=snapshot.player_state,liveQuestion=!!snapshot.question;
- const showBoard=identity.round_code==='R1A'&&['BETWEEN_QUESTIONS','ENDED'].includes(ps.screen)&&!!ps.current_question_position;
- return <main className="game-shell"><header className="game-header"><div className="game-brand-row"><Brand small/><div className="session-tools"><span className="slot-tag">{identity.round_code==='R1A'?'TEAM SESSION':`PLAYER ${identity.relay_slot}`}</span><button className="icon-button" aria-label="Log out" onClick={()=>setLogoutConfirm(true)}>↪</button></div></div>
-  <div className="team-strip"><span className="team-name" title={identity.team_name}>{identity.team_name}</span><span className="strip-score">{snapshot.score_total===undefined?'—':formatScore(snapshot.score_total)} <small>pts</small></span><span className="strip-rank" title={standing?.published_at?'Published '+new Date(standing.published_at).toLocaleString():'Not yet published'}>{identity.round_code==='R1A'?'Rank':'Last published'} <b>{standing?.rank!=null?'#'+standing.rank:'—'}</b></span></div>
+ const autoBetween=identity.round_code==='R1A'&&ps.screen==='BETWEEN_QUESTIONS'&&snapshot.rules.r1a.advance_mode==='AUTO'&&!snapshot.leaderboard?.final;
+ const showBoard=(identity.round_code==='R1A'&&snapshot.leaderboard?.published&&(
+   snapshot.leaderboard.final||(
+     snapshot.rules.r1a.advance_mode==='MANUAL'&&snapshot.rules.r1a.show_results_after_each_question&&['BETWEEN_QUESTIONS','ENDED'].includes(ps.screen)&&!!ps.current_question_position
+   )))||(identity.round_code==='R1B'&&snapshot.leaderboard?.final&&['FINISHED','EXPIRED','ENDED'].includes(ps.screen));
+ return <main className="game-shell"><header className="game-header"><div className="game-brand-row"><Brand small/><div className="session-tools"><span className="slot-tag">TEAM DEVICE</span><button className="icon-button" aria-label="Log out" onClick={()=>setLogoutConfirm(true)}>↪</button></div></div>
+  <div className="team-strip"><span className="team-name" title={identity.team_name}>{identity.team_name}</span>{snapshot.score_total!=null&&<span className="strip-score">{formatScore(snapshot.score_total)} <small>{identity.round_code==='R1B'?(snapshot.leaderboard?.final?'final R1B pts':'provisional R1B pts'):'R1A pts'}</small></span>}{standing?.rank!=null&&<span className="strip-rank" title={standing?.published_at?'Result view '+new Date(standing.published_at).toLocaleString():''}>{identity.round_code==='R1A'?'R1A rank':snapshot.leaderboard?.provisional?'Provisional R1B rank':'Final R1B rank'} <b>#{standing.rank}</b></span>}</div>
+  {identity.round_code==='R1B'&&snapshot.prior_r1a_results?.final&&snapshot.prior_r1a_results.mine&&<p className="micro-copy">Final R1A score: {formatScore(snapshot.prior_r1a_results.mine.score)} · rank #{snapshot.prior_r1a_results.mine.rank}</p>}
  </header>
  <div className="connection-row"><span className={'connection-label '+network}><span className="status-dot"/>{network==='online'?'Connected':network==='offline'?'Reconnecting · server clock continues':'Connecting'}</span><button className="text-button tiny" disabled={busy} onClick={()=>{if(snapshot.draft&&!confirm('Restore the server-saved draft? Any unsaved edits in this tab will be discarded.'))return;setError('');restoreRequested.current=true;refresh.current()}}>Refresh</button></div>
  {error&&<div className="notice error" role="alert">{error}<button className="text-button tiny" onClick={()=>setError('')}>Dismiss</button></div>}
- <div className="round-content" key={identity.round_code}>{liveQuestion?<Question key={snapshot.question.id+':'+restoreKey} state={snapshot} left={left} request={request} mutate={mutate} busy={busy} onError={setError}/>:showBoard?<QuestionLeaderboard state={snapshot}/>:<Waiting state={snapshot} left={left} mutate={mutate} busy={busy}/>}</div>
+ <div className="round-content" key={identity.round_code}>{liveQuestion?<Question key={snapshot.question.id+':'+restoreKey} state={snapshot} left={left} request={request} mutate={mutate} busy={busy} onError={setError}/>:showBoard?<QuestionLeaderboard state={snapshot}/>:autoBetween?<AutoBetween state={snapshot}/>:<Waiting state={snapshot} left={left} mutate={mutate} busy={busy}/>}</div>
  <footer className="game-footer"><span>ROUND 01 / {identity.round_code==='R1A'?'WIZTIME':'MATH RALLY'}</span><span>{identity.team_code}</span></footer>
- {logoutConfirm&&<Confirm title="Leave this session?" text="Your saved progress stays. Logging out frees your slot for a teammate." onCancel={()=>setLogoutConfirm(false)} onConfirm={logout}/>}
+ {logoutConfirm&&<Confirm title="Leave this session?"
+   text="Your saved progress stays. Logging out releases this team device session."
+   onCancel={()=>setLogoutConfirm(false)} onConfirm={logout}/>}
  {reveal&&!liveQuestion&&!snapshot.available_actions.includes('READY')&&<Reveal key={reveal.key} event={reveal} reduced={reduced} onClose={()=>setReveal(null)}/>}
  </main>;
 }

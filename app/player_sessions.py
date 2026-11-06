@@ -10,7 +10,7 @@ from .models import PlayerDevice, Round, RoundStatus, Team
 from .timing import utc_now
 
 settings = get_settings()
-ROUND_CAPACITY = {"R1A": 1, "R1B": 4}
+ROUND_CAPACITY = {"R1A": 1, "R1B": 1}
 
 
 async def lock_login_round(db: AsyncSession) -> Round:

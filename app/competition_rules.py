@@ -22,6 +22,7 @@ class CompetitionRulesError(RuntimeError):
 class R1ARules:
     advance_mode: str
     auto_advance_delay_ms: int
+    show_results_after_each_question: bool
     decay_enabled: bool
     question_count: int
     question_duration_ms: int
@@ -36,6 +37,7 @@ class R1ARules:
 @dataclass(frozen=True)
 class R1BRules:
     turn_count: int
+    show_results_after_each_question: bool
     total_answering_budget_ms: int
     correct_score: int
     wrong_score: int
@@ -104,18 +106,23 @@ def rules_from_dict(data: dict) -> CompetitionRules:
         # Snapshots written before these controls existed deliberately retain
         # the historical manual/decaying behaviour.
         a = {"advance_mode": "MANUAL", "auto_advance_delay_ms": 8000,
+             "show_results_after_each_question": True,
              "decay_enabled": True, **a}
+        b = {"show_results_after_each_question": False, **b}
         rules = CompetitionRules(
             version=str(data["version"]),
             r1a=R1ARules(
                 advance_mode=str(a["advance_mode"]),
                 auto_advance_delay_ms=_integer(a, "auto_advance_delay_ms"),
+                show_results_after_each_question=_boolean(a, "show_results_after_each_question"),
                 decay_enabled=_boolean(a, "decay_enabled"),
                 **{name: _integer(a, name) for name in R1ARules.__annotations__
-                   if name not in {"advance_mode", "auto_advance_delay_ms", "decay_enabled"}},
+                   if name not in {"advance_mode", "auto_advance_delay_ms", "show_results_after_each_question", "decay_enabled"}},
             ),
             r1b=R1BRules(**{
-                **{name: _integer(b, name) for name in R1BRules.__annotations__ if name != "default_timer_mode"},
+                **{name: _integer(b, name) for name in R1BRules.__annotations__
+                   if name not in {"default_timer_mode", "show_results_after_each_question"}},
+                "show_results_after_each_question": _boolean(b, "show_results_after_each_question"),
                 "default_timer_mode": str(b["default_timer_mode"]),
             }),
         )

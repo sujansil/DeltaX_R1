@@ -70,7 +70,7 @@ class PlayerDevice(Base):
         UniqueConstraint("session_id"),
         Index("ix_player_devices_session_id", "session_id", unique=True),
         Index("ix_player_devices_team_round", "team_id", "round_code"),
-        Index("uq_active_team_round_slot", "team_id", "round_code", "player_number",
+        Index("uq_active_team_round", "team_id", "round_code",
               unique=True, postgresql_where=active.is_(True)),
         CheckConstraint("round_code IN ('R1A', 'R1B')", name="ck_player_devices_round_code"),
         CheckConstraint("player_number BETWEEN 1 AND 4", name="ck_player_devices_slot"),
@@ -231,6 +231,32 @@ class R1AReceipt(Base):
     __table_args__ = (
         CheckConstraint("status IN ('PENDING', 'ACCEPTED', 'REJECTED')", name="ck_r1a_receipt_status"),
         Index("ix_r1a_receipts_pending_time", "received_at", postgresql_where=status == "PENDING"),
+    )
+
+class R1BReceipt(Base):
+    """Durable admission record for one immutable R1B relay turn."""
+    __tablename__ = "r1b_receipts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    turn_id: Mapped[str] = mapped_column(String(36), index=True)
+    question_position: Mapped[int] = mapped_column(Integer)
+    player_number: Mapped[int] = mapped_column(Integer)
+    action: Mapped[str] = mapped_column(String(8))
+    answer_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    turn_ready_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    team_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", server_default="PENDING")
+    submission_id: Mapped[int | None] = mapped_column(
+        ForeignKey("submissions.id", ondelete="SET NULL"), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejection_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    __table_args__ = (
+        CheckConstraint("action IN ('SUBMIT', 'SKIP')", name="ck_r1b_receipt_action"),
+        CheckConstraint("status IN ('PENDING', 'ACCEPTED', 'REJECTED')", name="ck_r1b_receipt_status"),
+        Index("ix_r1b_receipts_pending_deadline", "team_deadline",
+              postgresql_where=status == "PENDING"),
     )
 
 class ScoreEvent(Base):

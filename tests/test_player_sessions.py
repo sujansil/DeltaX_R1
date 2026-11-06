@@ -1,6 +1,7 @@
 import asyncio
 import os
 from datetime import timedelta
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -56,15 +57,15 @@ async def test_r1a_simultaneous_logins_only_one_succeeds():
     assert next(r for r in responses if r.status_code == 200).json()["slot"] == 1
 
 
-async def test_r1b_simultaneous_logins_are_four_distinct_slots():
+async def test_r1b_simultaneous_logins_allow_exactly_one_shared_device():
     require_disposable_test_database()
     await reset_and_seed("R1B")
     async with await client() as c:
         responses = await asyncio.gather(*(login(c) for _ in range(8)))
     successes = [r.json() for r in responses if r.status_code == 200]
-    assert len(successes) == 4
-    assert {r["slot"] for r in successes} == {1, 2, 3, 4}
-    assert [r.status_code for r in responses].count(409) == 4
+    assert len(successes) == 1
+    assert successes[0]["slot"] == 1
+    assert [r.status_code for r in responses].count(409) == 7
 
 
 async def test_logout_expiry_replacement_and_late_old_requests():
@@ -108,18 +109,54 @@ async def test_refresh_me_retains_identity_and_cross_round_is_rejected():
         assert (await c.get("/api/r1a/state", headers=headers)).status_code == 403
 
 
-async def test_non_current_r1b_slot_cannot_ready_question_or_submit():
+async def test_same_r1b_session_operates_later_relay_players():
     require_disposable_test_database()
     await reset_and_seed("R1B")
     async with await client() as c:
         first = (await login(c)).json()
-        second = (await login(c)).json()
         h1 = {"Authorization": "Bearer " + first["access_token"]}
-        h2 = {"Authorization": "Bearer " + second["access_token"]}
         assert (await c.post("/api/r1b/start", headers=h1)).status_code == 200
-        assert (await c.post("/api/r1b/ready", headers=h2)).status_code == 403
-        assert (await c.get("/api/r1b/question", headers=h2)).status_code in (403, 409)
-        assert (await c.post("/api/r1b/submit", headers=h2, json={"answer": "1"})).status_code == 403
+        assert (await c.post("/api/r1b/ready", headers=h1)).status_code == 200
+        question = await c.get("/api/r1b/question", headers=h1)
+        assert question.status_code in (200, 503)
+
+
+async def test_one_shared_session_completes_all_four_relay_turns():
+    require_disposable_test_database()
+    team_id = await reset_and_seed("R1B")
+    from app.db import SessionLocal
+    from app.models import Question, Submission, TeamRoundState
+    async with SessionLocal() as db:
+        for position in range(1, 5):
+            db.add(Question(round_code="R1B", position=position, answer_type="NUMERIC",
+                            question_text=f"Relay {position}", correct_numeric=Decimal(position)))
+        await db.commit()
+    async with await client() as c:
+        logged_in = (await login(c)).json()
+        headers = {"Authorization": "Bearer " + logged_in["access_token"]}
+        assert (await c.post("/api/r1b/start", headers=headers)).status_code == 200
+        for player in range(1, 5):
+            before = (await c.get("/api/player/bootstrap", headers=headers)).json()
+            assert before["player_state"]["screen"] == "HANDOVER_READY"
+            assert before["question"] is None
+            assert before["player_state"]["current_player"] == player
+            assert (await c.post("/api/r1b/ready", headers=headers)).status_code == 200
+            live = (await c.get("/api/player/bootstrap", headers=headers)).json()
+            assert live["question"]["position"] == player
+            response = await c.post("/api/r1b/submit", headers=headers, json={
+                "turn_id": live["draft"]["turn_id"], "answer": str(player), "skip": False,
+            })
+            assert response.status_code == 200, response.text
+        finished = (await c.get("/api/player/bootstrap", headers=headers)).json()
+        assert finished["player_state"]["screen"] == "FINISHED"
+    async with SessionLocal() as db:
+        rows = (await db.scalars(select(Submission).where(
+            Submission.team_id == team_id, Submission.round_code == "R1B"
+        ).order_by(Submission.question_position))).all()
+        state = await db.scalar(select(TeamRoundState).where(TeamRoundState.team_id == team_id))
+        assert [row.player_number for row in rows] == [1, 2, 3, 4]
+        assert all(row.result == "CORRECT" for row in rows)
+        assert state.turn_status == "FINISHED"
 
 
 async def protected_r1b_responses(c, headers):
@@ -128,7 +165,8 @@ async def protected_r1b_responses(c, headers):
         c.post("/api/r1b/start", headers=headers),
         c.post("/api/r1b/ready", headers=headers),
         c.get("/api/r1b/question", headers=headers),
-        c.post("/api/r1b/submit", headers=headers, json={"answer": "1"}),
+        c.post("/api/r1b/submit", headers=headers,
+               json={"turn_id": "00000000-0000-0000-0000-000000000000", "answer": "1"}),
         c.get("/api/leaderboard/published?round_code=R1B", headers=headers),
         c.get("/api/leaderboard/mine?round_code=R1B", headers=headers),
     ]
@@ -213,7 +251,7 @@ async def test_revocation_and_submission_have_deterministic_transaction_order(mo
     from sqlalchemy import func
     from app.api import admin, r1b
     from app.db import SessionLocal
-    from app.models import PlayerDevice, Submission
+    from app.models import PlayerDevice, Submission, TeamRoundState
 
     # Submission owns the shared Round lock first: it commits, then revocation wins
     # for every later request.
@@ -227,7 +265,9 @@ async def test_revocation_and_submission_have_deterministic_transaction_order(mo
         return row
     monkeypatch.setattr(r1b, "lock_round", gated_player)
     async with SessionLocal() as player_db, SessionLocal() as admin_db:
-        submitting = asyncio.create_task(r1b.submit(r1b.SubmitNumeric(answer="42"), user, player_db))
+        submitting = asyncio.create_task(r1b.submit(r1b.SubmitNumeric(
+            turn_id=(await player_db.scalar(select(TeamRoundState.current_turn_id).where(
+                TeamRoundState.team_id == team_id))), answer="42"), user, player_db))
         await asyncio.wait_for(acquired.wait(), 3)
         revoking = asyncio.create_task(admin.revoke_all_team_sessions(
             team_id, admin.RevokeSessionsIn(reason="race test"), {"sub": "test-admin"}, admin_db))
@@ -255,7 +295,9 @@ async def test_revocation_and_submission_have_deterministic_transaction_order(mo
         revoking = asyncio.create_task(admin.revoke_all_team_sessions(
             team_id, admin.RevokeSessionsIn(reason="race test"), {"sub": "test-admin"}, admin_db))
         await asyncio.wait_for(acquired.wait(), 3)
-        submitting = asyncio.create_task(r1b.submit(r1b.SubmitNumeric(answer="42"), user, player_db))
+        submitting = asyncio.create_task(r1b.submit(r1b.SubmitNumeric(
+            turn_id=(await player_db.scalar(select(TeamRoundState.current_turn_id).where(
+                TeamRoundState.team_id == team_id))), answer="42"), user, player_db))
         done, _ = await asyncio.wait({submitting}, timeout=.05)
         assert not done
         release.set()

@@ -284,8 +284,9 @@ def launch(base: str, round_code: str, credentials: list[TeamCredential], sessio
         browser = playwright.chromium.launch(headless=False)
         try:
             for team in credentials:
-                for slot_request in range(1, sessions + 1):
-                    label = f"{team.label} · {round_code} · requested slot {slot_request}"
+                # Both rounds intentionally use one browser context per team.
+                for _ in range(1):
+                    label = f"{team.label} · {round_code} · shared team device"
                     context = browser.new_context(
                         viewport={"width": 390, "height": 844},
                         screen={"width": 390, "height": 844},
@@ -295,7 +296,7 @@ def launch(base: str, round_code: str, credentials: list[TeamCredential], sessio
                     page = context.new_page()
                     try:
                         actual = login_player(page, player_url, team, round_code)
-                        actual_label = f"{team.label} · {round_code} · SLOT {actual['slot']}"
+                        actual_label = f"{team.label} · {round_code} · TEAM DEVICE"
                         page.evaluate("label => { document.title=label; document.getElementById('simulator-device-badge').textContent=label; }", actual_label)
                         print(f"Opened {actual_label} at 390x844 with touch emulation.")
                         contexts.append((context, actual["session_id"]))
@@ -331,9 +332,10 @@ def main() -> int:
     if round_code not in {"R1A", "R1B"}:
         raise RuntimeError("Round must be R1A or R1B.")
     count = ask_int("Number of test teams", 2, 1, 100)
-    sessions = 1 if round_code == "R1A" else ask_int("Sessions per team", 1, 1, 4)
+    sessions = 1
+    print(f"{round_code} uses exactly one session per team. R1B players pass the same device between turns.")
     if round_code == "R1A":
-        print("R1A uses exactly one session per team. Teams must exist and be enabled BEFORE round start because enrollment is snapshotted.")
+        print("Teams must exist and be enabled BEFORE round start because enrollment is snapshotted.")
     print(f"This will open {count * sessions} visible mobile-sized windows; start small and increase based on laptop RAM/CPU.")
     if yes_no("Create/reuse SIM-* teams through development admin APIs?"):
         credentials = provision(base, round_code, count)
