@@ -4,6 +4,7 @@ import katex from 'katex';
 import {api,autoRevealSeconds,formatScore,formatTime,outcomeKey,revealAllowed} from './api.js';
 import {DraftQueue} from './draft-queue.mjs';
 import './style.css';
+import CinematicLogin,{LoginPresentationBoundary} from './cinematic/CinematicLogin.jsx';
 const MathScene=lazy(()=>import('./MathScene.jsx'));
 const TOKEN='r1token';
 const store={get:(key)=>{try{return sessionStorage.getItem(key)}catch{return null}},set:(key,value)=>{try{sessionStorage.setItem(key,value)}catch{}}};
@@ -21,17 +22,12 @@ function RichText({text='',className=''}) {
 function Diagram({url,option=false}){if(!url)return null;return <img className={option?'option-image':'question-image'} src={url} alt={option?'Answer option diagram':'Question diagram'} loading="eager"/>;}
 function Login({onLogin,notice,reduced}) {
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[activation,setActivation]=useState(false),[show,setShow]=useState(false),[success,setSuccess]=useState('');
+ const classic=new URLSearchParams(window.location.search).get('login')==='classic';
  async function submit(e){e.preventDefault();if(busy)return;setBusy(true);setError('');setSuccess('');const f=new FormData(e.currentTarget);
  try{if(activation){await api('/api/auth/team/set-password',{method:'POST',body:{username:f.get('username').trim(),activation_token:f.get('activation'),new_password:f.get('password')}});setActivation(false);setSuccess('Password created. Sign in with your team username.');}
  else{const d=await api('/api/auth/team/login',{method:'POST',body:{username:f.get('username').trim(),password:f.get('password')}});onLogin(d.access_token);}}
  catch(e){setError(e.message)}finally{setBusy(false)}}
- return <main className="login-page"><a className="skip-link" href="#credentials">Skip to team login</a>
-  <section className="login-hero" aria-label="Delta X mathematical arena"><div className="hero-top"><span className="eyebrow">A MATHEMATICAL ENCOUNTER</span><span className="edition">ROUND 01</span></div>
-   <Suspense fallback={<div className="scene-placeholder"/>}><MathScene reduced={reduced}/></Suspense>
-   <div className="hero-wordmark"><Brand/><p>Small changes. Extraordinary outcomes.</p></div>
-   <a className="scroll-cue" href="#credentials">Scroll to enter<span aria-hidden="true">↓</span></a>
-  </section>
-  <section className="credential-section" id="credentials"><div className="credential-inner"><div className="section-number">01 / ENTER</div><h1>{activation?'Activate your team.':'Your team. Your next move.'}</h1><p className="muted">{activation?'Use the activation details shared by the organisers.':'Sign in on your team device. In Math Rally, pass this same device between all four players.'}</p>
+ const credentials=<section className="credential-section" id="credentials"><div className="credential-inner"><div className="section-number">{classic?'01 / ENTER':activation?'FIRST TIME / BEGIN HERE':'LET CURIOSITY LEAD'}</div><h1>{activation?'Activate your team.':classic?'Your team. Your next move.':<>Four minds.<br/><em>One clock.</em></>}</h1><p className="muted">{activation?'Use the activation details shared by the organisers.':'Sign in on your team device. In Math Rally, pass this same device between all four players.'}</p>
    {(notice||error)&&<div className="notice error" role="alert">{error||notice}</div>}{success&&<div className="notice" role="status">{success}</div>}
    <form onSubmit={submit} key={activation?'activation':'login'}>
     {activation?<><label>Team username<input name="username" required maxLength={120} autoComplete="username" autoCapitalize="none" spellCheck="false" placeholder="Your assigned username"/></label><label>Activation code<input name="activation" required maxLength={256} autoComplete="one-time-code" autoCapitalize="characters" spellCheck="false" placeholder="XXXX-XXXX"/></label></>:<label>Team username<input name="username" required maxLength={120} autoComplete="username" autoCapitalize="none" spellCheck="false" placeholder="Your assigned username"/></label>}
@@ -40,8 +36,16 @@ function Login({onLogin,notice,reduced}) {
    </form>
    <button className="text-button activation-toggle" onClick={()=>{setActivation(!activation);setError('')}}>{activation?'Back to sign in':'First time? Activate your team'}</button>
    <div className="login-footnote"><span>WIZTIME / MATH RALLY</span><span>Think clearly. Play together.</span></div>
-  </div></section>
+  </div></section>;
+ const original=<main className="login-page"><a className="skip-link" href="#credentials">Skip to team login</a>
+  <section className="login-hero" aria-label="Delta X mathematical arena"><div className="hero-top"><span className="eyebrow">A MATHEMATICAL ENCOUNTER</span><span className="edition">ROUND 01</span></div>
+   <Suspense fallback={<div className="scene-placeholder"/>}><MathScene reduced={reduced}/></Suspense>
+   <div className="hero-wordmark"><Brand/><p>Small changes. Extraordinary outcomes.</p></div>
+   <a className="scroll-cue" href="#credentials">Scroll to enter<span aria-hidden="true">↓</span></a>
+  </section>{credentials}
  </main>;
+ if(classic)return original;
+ return <LoginPresentationBoundary fallback={original}><CinematicLogin reduced={reduced} busy={busy} activation={activation}>{credentials}</CinematicLogin></LoginPresentationBoundary>;
 }
 function useClock(snapshot){const [tick,setTick]=useState(0);useEffect(()=>{if(!snapshot?.timer.running)return;const id=setInterval(()=>setTick(x=>x+1),150);return()=>clearInterval(id)},[snapshot?.timer.running]);
  const t=snapshot?.timer;return t?Math.max(0,t.remaining_ms-(t.running?performance.now()-snapshot._received+(snapshot._transit||0):0)):0;

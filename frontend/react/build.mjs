@@ -13,7 +13,7 @@ await build({entryPoints: [path.join(here, 'src/main.jsx')], outdir: out,
   loader:{'.woff2':'file','.woff':'file','.ttf':'file'}});
 await cp(path.join(here, 'node_modules/katex/dist/katex.min.css'), path.join(out, 'katex.min.css'));
 await cp(path.join(here, 'node_modules/katex/dist/fonts'), path.join(out,'fonts'), {recursive:true});
-const packages = ['react','react-dom','three','katex','esbuild'];
+const packages = ['react','react-dom','three','katex','esbuild','@react-three/fiber','@react-three/drei','@react-three/postprocessing','postprocessing','gsap','@fontsource-variable/manrope','@fontsource-variable/outfit','@fontsource/ibm-plex-mono'];
 let notices='Delta X frontend third-party notices\n\n';
 for (const name of packages) {
  const files = await readdir(path.join(here,'node_modules',name));

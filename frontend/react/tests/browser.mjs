@@ -14,10 +14,10 @@ const browser=await chromium.launch({headless:true,...(process.env.DX_CHROMIUM?{
 let checks=0;
 const clone=v=>JSON.parse(JSON.stringify(v));
 function fixture(round='R1A',slot=1){return {contract_version:'1',snapshot_version:'fixture',snapshot_at:new Date().toISOString(),identity:{team_id:1,team_code:'TEAM01',team_name:'VECTOR FOUR',session_id:'fixture-session',round_code:round,relay_slot:slot,heartbeat_interval_seconds:15},round:{code:round,status:'LIVE'},rules:{version:'fixture',r1a:{advance_mode:'MANUAL',show_results_after_each_question:true,question_count:23,question_duration_ms:30000},r1b:{show_results_after_each_question:false,turn_count:4,total_answering_budget_ms:1680000}},player_state:{screen:round==='R1A'?'ACTIVE_UNANSWERED':'ACTIVE',current_player:1,current_question_position:7,turn_status:'ACTIVE'},timer:{mode:round==='R1A'?'QUESTION':'CONTINUOUS',running:true,frozen:false,remaining_ms:18000,deadline:new Date(Date.now()+18000).toISOString()},score_total:4250,question:{id:7,position:7,text:'A price rises by 20%, then falls by 20%. What is the net change?',image_url:null,options:[{id:1,position:1,text:'No change'},{id:2,position:2,text:'4% decrease'},{id:3,position:3,text:'4% increase'},{id:4,position:4,text:'2% decrease'}]},own_outcome:{accepted:false,finalized:false},draft:round==='R1B'?{turn_id:'00000000-0000-4000-8000-000000000001',version:0,answer:''}:null,available_actions:round==='R1A'?['SUBMIT']:['SUBMIT','SKIP','SAVE_DRAFT']}}
-async function scenario(state,{reducedMotion='no-preference',width=390}={}){
+async function scenario(state,{reducedMotion='no-preference',width=390,classic=false}={}){
  const context=await browser.newContext({viewport:{width,height:844},isMobile:true,deviceScaleFactor:1,hasTouch:true,reducedMotion});
  await context.addInitScript(()=>{if(!sessionStorage.getItem('fixture-cleared')){localStorage.clear();sessionStorage.setItem('fixture-cleared','1')}});
- const page=await context.newPage();const errors=[],calls=[];page.on('pageerror',e=>errors.push(e.message));let revoked=false,submitted=0;
+ const page=await context.newPage();const errors=[],calls=[];page.on('pageerror',e=>{errors.push(e.message);console.error(e.stack)});let revoked=false,submitted=0;
  await page.route('**/api/**',async route=>{const req=route.request(),p=new URL(req.url()).pathname;calls.push({p,method:req.method(),body:req.postDataJSON?.()});
   const fulfill=(d,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(d)});
   if(p.endsWith('/login'))return fulfill({access_token:'fixture-token'});
@@ -30,12 +30,12 @@ async function scenario(state,{reducedMotion='no-preference',width=390}={}){
   if(p.endsWith('/submit')){submitted++;state.own_outcome={accepted:true,finalized:true,submission_id:100,question_position:7,player_number:1,points:null,result:null,score_revealed:false};state.question=null;state.draft=null;state.available_actions=state.identity.round_code==='R1A'?[]:['READY'];state.player_state.screen=state.identity.round_code==='R1A'?'ACTIVE_ACCEPTED':'HANDOVER_READY';if(state.identity.round_code==='R1B')state.player_state.current_player=2;return fulfill({accepted:true,position:7,message:'Answer recorded'})}
   return fulfill({ok:true});
  });
- await page.goto(base+'/player/');
+ await page.goto(base+'/player/'+(classic?'?login=classic':''));
  return {page,context,errors,calls,revoke:()=>{revoked=true},submits:()=>submitted,login:async()=>{await page.getByLabel('Team username').fill('vector',{timeout:8000}).catch(async e=>{console.log('LOGIN DEBUG',await page.locator('body').innerText(),errors);throw e});await page.getByLabel('Password',{exact:true}).fill('example-password');await page.getByRole('button',{name:'Enter the arena'}).click();await page.getByText('VECTOR FOUR',{exact:true}).waitFor();}};
 }
 try{
- // Real 3D opening and scroll-only credential reveal.
- const s=fixture(),a=await scenario(s);const {page}=a;
+ // Preserve the original scroll-only presentation behind the classic switch.
+ const s=fixture(),a=await scenario(s,{classic:true});const {page}=a;
  await page.locator('canvas').waitFor({timeout:15000});
  assert(await page.getByRole('button',{name:'Enter the arena'}).boundingBox().then(b=>b.y>=800));checks++;
  if(shots)await page.screenshot({path:shots+'/01-login.png'});
