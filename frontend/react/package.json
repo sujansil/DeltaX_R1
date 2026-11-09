@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
+    "build": "node build.mjs && node audience-build.mjs",
+    "build:audience": "node audience-build.mjs",
+    "test:audience": "node tests/audience.browser.mjs",
+    "preview:audience": "node audience-preview.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:browser": "node tests/browser.mjs",
     "test:cinematic": "node tests/cinematic-login.browser.mjs"

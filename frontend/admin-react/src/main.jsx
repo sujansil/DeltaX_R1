@@ -10,6 +10,7 @@ import {
   text,
 } from "./api.js";
 import "./style.css";
+import "./audience-control.css";
 const NAV = [
   ["overview", "Overview"],
   ["questions", "Questions"],
@@ -17,6 +18,7 @@ const NAV = [
   ["sessions", "Sessions"],
   ["submissions", "Submissions"],
   ["results", "Results"],
+  ["audience", "Audience Control"],
   ["audit", "Audit log"],
 ];
 const Context = React.createContext();
@@ -69,6 +71,59 @@ function useData(path, { interval = 0 } = {}) {
     };
   }, [path, version, revision, request, interval]);
   return { data, error, loading, reload };
+}
+function AudienceControl() {
+  const { request, run, busy } = useApp();
+  const state = useData("/api/admin/audience", { interval: 1000 });
+  const d = state.data;
+  async function toggle(key) {
+    if (!d) return;
+    await run(() => request("/api/admin/audience", { method: "PUT", body: {
+      expected_revision: d.revision, ...d.controls, [key]: !d.controls[key],
+    }}), "Audience settings saved.");
+  }
+  async function review(action) {
+    await run(() => request("/api/admin/audience/review", { method: "POST", body: {
+      expected_revision: d.revision, action,
+    }}), "Audience review advanced.");
+  }
+  return <div className="audience-control">
+    <p className="audience-intro">Manage what the auditorium sees. Presentation settings never change gameplay clocks, scoring or result publication.</p>
+    <Panel title="Presentation settings" description="Two independent settings for the audience display. The leaderboard setting applies to both R1A and R1B.">
+      <DataState r={state}>{() => <>
+        <div className="audience-settings">
+          <div className="audience-setting">
+            <div><h3 id="audience-preview-label">Upcoming Question Preview</h3><p id="audience-preview-help">Let the next question take over the screen after the answer and optional standings stages. The official live question always takes priority.</p></div>
+            <button type="button" className="audience-toggle" role="switch" aria-checked={d.controls.preview_upcoming} aria-labelledby="audience-preview-label" aria-describedby="audience-preview-help" disabled={busy} onClick={() => toggle("preview_upcoming")}>
+              <span className="audience-toggle-track" aria-hidden="true"><span /></span><span aria-hidden="true">{d.controls.preview_upcoming ? "ON" : "OFF"}</span>
+            </button>
+          </div>
+          <div className="audience-setting">
+            <div><h3 id="audience-leaderboard-label">Audience Leaderboard</h3><p id="audience-leaderboard-help">Show the authorized top 16 at the results stage. Correct-answer reveals remain visible when this is off.</p></div>
+            <button type="button" className="audience-toggle" role="switch" aria-checked={d.controls.leaderboard_visible} aria-labelledby="audience-leaderboard-label" aria-describedby="audience-leaderboard-help" disabled={busy} onClick={() => toggle("leaderboard_visible")}>
+              <span className="audience-toggle-track" aria-hidden="true"><span /></span><span aria-hidden="true">{d.controls.leaderboard_visible ? "ON" : "OFF"}</span>
+            </button>
+          </div>
+        </div>
+      </>}</DataState>
+    </Panel>
+    <Panel title="Current audience display" description="The latest public presentation state confirmed by the server.">
+      <DataState r={state}>{() => <>
+        <dl className="audience-status">
+          <div><dt>Phase</dt><dd>{d.round_code} · {d.view.replaceAll("_", " ")}{d.paused ? " · PAUSED" : ""}</dd></div>
+          <div><dt>Question</dt><dd>{d.question ? `${d.question.position}${d.question_count ? ` / ${d.question_count}` : ""}` : "No question on screen"}</dd></div>
+          <div><dt>Synchronization</dt><dd><span className="audience-sync-dot" aria-hidden="true" />Connected to server</dd></div>
+        </dl>
+        <div className="audience-status-footer"><p className="help">Server snapshot {date(d.snapshot_at)}<br />Revision {d.revision}</p><a className="button" href="/audience/" target="_blank" rel="noopener noreferrer">Open audience display ↗</a></div>
+      </>}</DataState>
+    </Panel>
+    <Panel title="R1B post-round review" description="During Math Rally the audience remains in standby. Question/answer slides are available only after the entire R1B round has ended.">
+      {d && <><p className="audience-review-state">{d.review.ended ? d.review.step < 0 ? "Ready to begin review." : d.review.step >= d.review.total_slides ? "Review complete." : `Slide ${d.review.step + 1} / ${d.review.total_slides}` : "Waiting for the server to confirm R1B has ended."}</p>
+        <div className="actions audience-review-actions"><BusyButton label="Start R1B review" disabled={!d.review.can_start} onClick={() => review("start")} />
+          <BusyButton label="Next review slide" disabled={!d.review.can_next} onClick={() => review("next")} /></div>
+      </>}
+    </Panel>
+  </div>;
 }
 function Message({ children, error = false }) {
   return children ? (
@@ -2152,6 +2207,7 @@ function App() {
       sessions: Sessions,
       submissions: Submissions,
       results: Results,
+      audience: AudienceControl,
       audit: Audit,
     },
     View = views[tab];

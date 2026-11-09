@@ -58,6 +58,9 @@ const calls = [],
 let checks = 0,
   expired = false,
   nextQ = 2;
+let rejectNextAudienceWrite=false;
+let audienceState={revision:0,round_code:'R1A',view:'STANDBY',snapshot_at:new Date().toISOString(),paused:false,question:null,
+ controls:{preview_upcoming:false,leaderboard_visible:false},review:{ended:false,step:-1,total_slides:8,can_start:false,can_next:false}};
 let rounds = [
   { code: "R1A", status: "DRAFT", position: 0, question_active: false, rules: {r1a:{question_count:23,question_duration_ms:30000}} },
   { code: "R1B", status: "DRAFT", timer_mode: "CONTINUOUS", rules: {r1b:{turn_count:4,total_answering_budget_ms:1680000}} },
@@ -126,6 +129,19 @@ async function routes(page) {
         contentType: "application/json",
         body: JSON.stringify(data),
       });
+    if(p==='/api/admin/audience'||p==='/api/admin/audience/review'){
+      if(expired)return send({detail:{code:'TOKEN_INVALID',message:'Expired'}},401);
+      if(method==='GET')return send(audienceState);
+      if(rejectNextAudienceWrite){rejectNextAudienceWrite=false;audienceState.revision++;}
+      if(body.expected_revision!==audienceState.revision)return send({detail:{message:'Refresh audience controls'}},409);
+      if(method==='PUT')audienceState.controls={preview_upcoming:body.preview_upcoming,leaderboard_visible:body.leaderboard_visible};
+      else{
+        if(!audienceState.review.ended)return send({detail:{message:'Round not ended'}},409);
+        audienceState.review.step=body.action==='start'?0:audienceState.review.step+1;
+        audienceState.review.can_start=false;audienceState.review.can_next=audienceState.review.step<8;
+      }
+      audienceState.revision++;return send({revision:audienceState.revision,...audienceState.controls});
+    }
     if (p === "/api/auth/admin/setup")
       return body.username === "existing"
         ? send({ detail: "Admin already exists" }, 409)
@@ -535,6 +551,54 @@ try {
   await page.getByLabel("Question text", { exact: false }).waitFor();
   assert(await page.getByLabel("Question text", { exact: false }).isDisabled());
   checks++;
+  await page.getByRole('button',{name:'Audience Control',exact:true}).click();
+  await page.getByRole('switch',{name:'Upcoming Question Preview',exact:true,checked:false}).click();
+  await page.getByRole('switch',{name:'Upcoming Question Preview',exact:true,checked:true}).waitFor();
+  await page.getByRole('switch',{name:'Audience Leaderboard',exact:true,checked:false}).click();
+  await page.getByRole('switch',{name:'Audience Leaderboard',exact:true,checked:true}).waitFor();
+  assert.equal(await page.getByRole('switch',{name:'Audience Leaderboard',exact:true}).count(),1);
+  assert(await page.getByRole('button',{name:'Start R1B review',exact:true}).isDisabled());assert(await page.getByRole('button',{name:'Next review slide',exact:true}).isDisabled());checks++;
+  audienceState.review.ended=true;audienceState.review.can_start=true;
+  await page.getByRole('button',{name:'Start R1B review',exact:true}).click();
+  await page.getByText('Slide 1 / 8',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Next review slide',exact:true}).click();
+  await page.getByText('Slide 2 / 8',{exact:true}).waitFor();checks++;
+  // Stale revisions surface the existing server error without changing the switch.
+  rejectNextAudienceWrite=true;
+  const writesBefore=calls.filter(c=>c.p==='/api/admin/audience'&&c.method==='PUT').length;
+  await page.getByRole('switch',{name:'Upcoming Question Preview',checked:true}).click();
+  await page.getByRole('alert').filter({hasText:'Refresh audience controls'}).waitFor();
+  assert.equal(audienceState.controls.preview_upcoming,true);
+  assert.equal(calls.filter(c=>c.p==='/api/admin/audience'&&c.method==='PUT').length,writesBefore+1);
+  assert(await page.getByRole('switch',{name:'Upcoming Question Preview'}).isChecked());checks++;
+  // Fresh polling restores the revision; OFF/ON keep the same complete settings contract.
+  await page.waitForTimeout(1200);
+  await page.getByRole('switch',{name:'Upcoming Question Preview',checked:true}).focus();
+  await page.keyboard.press('Space');
+  await page.getByRole('switch',{name:'Upcoming Question Preview',checked:false}).waitFor();
+  await page.getByRole('switch',{name:'Upcoming Question Preview',checked:false}).focus();
+  await page.keyboard.press('Space');
+  await page.getByRole('switch',{name:'Upcoming Question Preview',checked:true}).waitFor();
+  await page.getByRole('switch',{name:'Audience Leaderboard',checked:true}).click();
+  await page.getByRole('switch',{name:'Audience Leaderboard',checked:false}).waitFor();
+  await page.getByRole('switch',{name:'Audience Leaderboard',checked:false}).click();
+  await page.getByRole('switch',{name:'Audience Leaderboard',checked:true}).waitFor();checks++;
+  audienceState.round_code='R1B';audienceState.view='REVIEW_ANSWER';audienceState.question={position:1};audienceState.question_count=4;
+  await page.getByText('R1B · REVIEW ANSWER',{exact:true}).waitFor();
+  for(const viewport of [{width:390,height:844},{width:768,height:1024},{width:1366,height:768},{width:1920,height:1080}]){
+    await page.setViewportSize(viewport);
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    for(const control of await page.locator('.audience-control button,.audience-control a').all()){
+      const box=await control.boundingBox();assert(box&&box.x>=0&&box.x+box.width<=viewport.width&&box.height>=44);
+    }
+    assert.equal(await page.getByRole('switch').count(),2);
+    assert(await page.getByRole('button',{name:'Start R1B review'}).isDisabled());
+    assert(await page.getByRole('button',{name:'Next review slide'}).isEnabled());
+    if(shots)await page.screenshot({path:shots+`/audience-control-${viewport.width}.png`,fullPage:true});
+    checks++;
+  }
+  await page.setViewportSize({width:1366,height:768});
+  if(shots)await page.screenshot({path:shots+'/admin-audience.png',fullPage:true});
   expired = true;
   await page.getByRole("button", { name: "Overview", exact: true }).click();
   await page.getByRole("heading", { name: "Admin sign in" }).waitFor();
@@ -562,6 +626,10 @@ try {
   checks++;
   if (shots)
     await mp.screenshot({ path: shots + "/admin-mobile.png", fullPage: true });
+  await mp.getByRole('button',{name:'Audience Control',exact:true}).click();
+  await mp.getByRole('switch',{name:'Audience Leaderboard',exact:true,checked:true}).waitFor();
+  assert(await mp.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));checks++;
+  if(shots)await mp.screenshot({path:shots+'/admin-audience-mobile.png',fullPage:true});
   assert.deepEqual(errors, []);
   await mp.close();
   console.log(

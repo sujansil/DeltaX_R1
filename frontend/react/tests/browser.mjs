@@ -14,8 +14,8 @@ const browser=await chromium.launch({headless:true,...(process.env.DX_CHROMIUM?{
 let checks=0;
 const clone=v=>JSON.parse(JSON.stringify(v));
 function fixture(round='R1A',slot=1){return {contract_version:'1',snapshot_version:'fixture',snapshot_at:new Date().toISOString(),identity:{team_id:1,team_code:'TEAM01',team_name:'VECTOR FOUR',session_id:'fixture-session',round_code:round,relay_slot:slot,heartbeat_interval_seconds:15},round:{code:round,status:'LIVE'},rules:{version:'fixture',r1a:{advance_mode:'MANUAL',show_results_after_each_question:true,question_count:23,question_duration_ms:30000},r1b:{show_results_after_each_question:false,turn_count:4,total_answering_budget_ms:1680000}},player_state:{screen:round==='R1A'?'ACTIVE_UNANSWERED':'ACTIVE',current_player:1,current_question_position:7,turn_status:'ACTIVE'},timer:{mode:round==='R1A'?'QUESTION':'CONTINUOUS',running:true,frozen:false,remaining_ms:18000,deadline:new Date(Date.now()+18000).toISOString()},score_total:4250,question:{id:7,position:7,text:'A price rises by 20%, then falls by 20%. What is the net change?',image_url:null,options:[{id:1,position:1,text:'No change'},{id:2,position:2,text:'4% decrease'},{id:3,position:3,text:'4% increase'},{id:4,position:4,text:'2% decrease'}]},own_outcome:{accepted:false,finalized:false},draft:round==='R1B'?{turn_id:'00000000-0000-4000-8000-000000000001',version:0,answer:''}:null,available_actions:round==='R1A'?['SUBMIT']:['SUBMIT','SKIP','SAVE_DRAFT']}}
-async function scenario(state,{reducedMotion='no-preference',width=390,classic=false}={}){
- const context=await browser.newContext({viewport:{width,height:844},isMobile:true,deviceScaleFactor:1,hasTouch:true,reducedMotion});
+async function scenario(state,{reducedMotion='no-preference',width=390,height=844,classic=false,themeClassic=false}={}){
+ const context=await browser.newContext({viewport:{width,height},isMobile:width<601,deviceScaleFactor:1,hasTouch:width<1024,reducedMotion});
  await context.addInitScript(()=>{if(!sessionStorage.getItem('fixture-cleared')){localStorage.clear();sessionStorage.setItem('fixture-cleared','1')}});
  const page=await context.newPage();const errors=[],calls=[];page.on('pageerror',e=>{errors.push(e.message);console.error(e.stack)});let revoked=false,submitted=0;
  await page.route('**/api/**',async route=>{const req=route.request(),p=new URL(req.url()).pathname;calls.push({p,method:req.method(),body:req.postDataJSON?.()});
@@ -30,7 +30,8 @@ async function scenario(state,{reducedMotion='no-preference',width=390,classic=f
   if(p.endsWith('/submit')){submitted++;state.own_outcome={accepted:true,finalized:true,submission_id:100,question_position:7,player_number:1,points:null,result:null,score_revealed:false};state.question=null;state.draft=null;state.available_actions=state.identity.round_code==='R1A'?[]:['READY'];state.player_state.screen=state.identity.round_code==='R1A'?'ACTIVE_ACCEPTED':'HANDOVER_READY';if(state.identity.round_code==='R1B')state.player_state.current_player=2;return fulfill({accepted:true,position:7,message:'Answer recorded'})}
   return fulfill({ok:true});
  });
- await page.goto(base+'/player/'+(classic?'?login=classic':''));
+ const query=new URLSearchParams();if(classic)query.set('login','classic');if(themeClassic)query.set('theme','classic');
+ await page.goto(base+'/player/'+(query.size?'?'+query:''));
  return {page,context,errors,calls,revoke:()=>{revoked=true},submits:()=>submitted,login:async()=>{await page.getByLabel('Team username').fill('vector',{timeout:8000}).catch(async e=>{console.log('LOGIN DEBUG',await page.locator('body').innerText(),errors);throw e});await page.getByLabel('Password',{exact:true}).fill('example-password');await page.getByRole('button',{name:'Enter the arena'}).click();await page.getByText('VECTOR FOUR',{exact:true}).waitFor();}};
 }
 try{
@@ -81,6 +82,51 @@ try{
  auto.r1a_phase={phase:'RESULT',next_reveal_at:new Date(Date.now()+5100).toISOString(),remaining_ms:5100,frozen:true};await autoRun.page.getByRole('button',{name:'Refresh',exact:true}).click();await autoRun.page.getByRole('heading',{name:'Paused · Next question starts in 6s'}).waitFor();await autoRun.page.waitForTimeout(1100);assert.equal(await autoRun.page.locator('.waiting-panel h1').innerText(),'Paused · Next question starts in 6s');checks++;
  auto.r1a_phase={phase:'RESULT',next_reveal_at:null,remaining_ms:0,frozen:false};await autoRun.page.getByRole('button',{name:'Refresh',exact:true}).click();await autoRun.page.getByRole('heading',{name:'Preparing next question…'}).waitFor();assert.equal(await autoRun.page.locator('.waiting-panel').innerText(),'Preparing next question…');checks++;
  auto.r1a_phase={phase:'RESULT',next_reveal_at:new Date().toISOString(),remaining_ms:0,frozen:false};await autoRun.page.getByRole('button',{name:'Refresh',exact:true}).click();await autoRun.page.getByRole('heading',{name:'Next question starts in 0s'}).waitFor();await autoRun.page.waitForTimeout(500);assert.equal(await autoRun.page.locator('.waiting-panel h1').innerText(),'Next question starts in 0s');checks++;await autoRun.page.close();
+ // The skin switch affects presentation only; native questions and actions stay intact.
+ for(const round of ['R1A','R1B'])for(const themeClassic of [false,true]){
+  const state=fixture(round),r=await scenario(state,{themeClassic,reducedMotion:'reduce',width:themeClassic?390:1440});await r.login();
+  assert.equal(await r.page.evaluate(()=>document.documentElement.classList.contains('r1-player-atrium')),!themeClassic);
+  assert.equal(await r.page.locator('.game-shell canvas').count(),0);
+  if(shots)await r.page.screenshot({path:shots+`/player-${round}-${themeClassic?'classic':'atrium'}.png`,fullPage:true});
+  if(round==='R1A'){await r.page.locator('input[type="radio"]').nth(1).check();await r.page.getByRole('button',{name:'Lock answer'}).click();}
+  else{await r.page.getByLabel('Your numerical answer').fill('42');await r.page.getByRole('button',{name:'Submit answer',exact:true}).click();}
+  await r.page.getByRole('heading',{name:round==='R1A'?'Answer locked.':'Pass to the next player.'}).waitFor();assert.equal(r.submits(),1);assert.deepEqual(r.errors,[]);await r.page.close();checks++;
+ }
+ // Targeted responsive regression matrix: real native questions, media and controls.
+ const viewports=[{width:390,height:844},{width:768,height:1024},{width:1366,height:768},{width:1920,height:1080}];
+ const fits=async page=>assert(await page.evaluate(()=>{
+  if(document.documentElement.scrollWidth>innerWidth)return false;
+  return [...document.querySelectorAll('.game-shell button,.game-shell input:not([type=radio])')].filter(el=>el.getClientRects().length).every(el=>{const r=el.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.width>0;});
+ }),'No horizontal overflow or clipped controls');
+ for(const viewport of viewports)for(const round of ['R1A','R1B'])for(const themeClassic of [false,true]){
+  const state=fixture(round);state.timer.running=false;state.timer.remaining_ms=30000;
+  if(round==='R1B'){state.question.position=1;state.player_state.current_question_position=1;}
+  state.question.text='For a geometric sequence with $a_n=3(2^{n-1})$, determine the exact value of the following expression, explaining how each term contributes to the total: $$\\sum_{k=1}^{12} \\frac{3(2^{k-1})}{2^k} + \\sqrt{144}.$$ Use the diagram and compare all the answer choices before submitting.';
+  state.question.image_url='/ui-fixture.svg';state.question.options[0].image_url='/ui-fixture.svg';
+  state.question.options[1].text='A longer mathematical answer: $\\frac{1}{2}+\\frac{1}{4}+\\frac{1}{8}$, with a detailed explanation and special characters < > &.';
+  const r=await scenario(state,{...viewport,themeClassic,reducedMotion:'reduce'});
+  await r.page.route('**/ui-fixture.svg',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360"><rect width="1200" height="360" fill="#14283a"/><path d="M80 290 580 70 1080 290Z" fill="none" stroke="#9bdcd4" stroke-width="5"/><text x="550" y="250" fill="#e5cca0" font-size="44">x + y</text></svg>'}));
+  await r.login();await r.page.locator('.question-image').waitFor();await r.page.waitForFunction(()=>[...document.querySelectorAll('.question-panel img')].every(img=>img.complete&&img.naturalWidth>0));
+  assert(await r.page.locator('.question-body .katex').count()>0);await fits(r.page);
+  const shell=await r.page.locator('.game-shell').boundingBox();
+  if(!themeClassic&&viewport.width>=601)assert(shell.width>=Math.min(viewport.width,1400)-2);
+  if(themeClassic)assert(shell.width<=650);
+  if(!themeClassic&&viewport.width>=1024){const q=await r.page.locator('.question-body').boundingBox(),f=await r.page.locator(round==='R1A'?'.mcq-form':'.numeric-form').boundingBox();assert(f.x>q.x+q.width);assert(Math.abs(f.y-q.y)<2);}
+  if(round==='R1A'){assert(await r.page.getByRole('button',{name:'Lock answer'}).isDisabled());await r.page.locator('input[type=radio]').nth(1).check();assert(await r.page.getByRole('button',{name:'Lock answer'}).isEnabled());}
+  else{await r.page.getByLabel('Your numerical answer').fill('123.75');await r.page.getByText('Saved to server',{exact:true}).waitFor();await r.page.getByRole('button',{name:'Skip this question'}).click();await r.page.getByRole('dialog',{name:'Skip this question?'}).waitFor();await fits(r.page);assert.equal(r.submits(),0);await r.page.getByRole('button',{name:'Cancel',exact:true}).click();}
+  if(shots&&!themeClassic)await r.page.screenshot({path:shots+`/responsive-${round}-${viewport.width}.png`,fullPage:true});
+  state.timer.remaining_ms=0;state.available_actions=[];await r.page.reload();await r.page.locator('.question-panel').waitFor();
+  if(round==='R1A'){await r.page.getByRole('timer',{name:'00:00 remaining'}).waitFor();assert(await r.page.locator('input[type=radio]').first().isDisabled());}
+  else{assert(await r.page.getByLabel('Your numerical answer').isDisabled());assert(await r.page.getByRole('button',{name:'Skip this question'}).isDisabled());}
+  await fits(r.page);
+  if(round==='R1B'){
+   state.question=null;state.draft=null;state.player_state.screen='HANDOVER_READY';state.player_state.current_player=2;state.player_state.turn_status='WAITING';state.available_actions=['READY'];state.timer.frozen=true;
+   await r.page.reload();await r.page.getByRole('button',{name:'Player 2 · READY'}).waitFor();await fits(r.page);assert(await r.page.getByRole('button',{name:'Player 2 · READY'}).isEnabled());
+  }
+  await r.page.getByRole('button',{name:'Log out'}).click();await r.page.getByRole('dialog').waitFor();await fits(r.page);await r.page.getByRole('button',{name:'Cancel',exact:true}).click();
+  r.revoke();await r.page.getByRole('button',{name:'Refresh',exact:true}).click();await r.page.getByRole('button',{name:'Enter the arena'}).waitFor();assert.match(await r.page.locator('[role=alert]').innerText(),/expired|revoked/);
+  assert.deepEqual(r.errors,[]);await r.context.close();checks++;
+ }
  // Existing admin page plus functional management additions.
  const admin=await browser.newContext({viewport:{width:1200,height:900}});
  await admin.addInitScript(()=>localStorage.setItem('adminToken','fixture-admin'));

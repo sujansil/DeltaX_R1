@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
-from .api import auth, r1a, r1b, admin, leaderboard, player
+from .api import auth, r1a, r1b, admin, leaderboard, player, audience
 from .config import get_settings
 from .db import SessionLocal
 from .r1a_reconciliation import reconcile_r1a
@@ -65,6 +65,7 @@ Path(settings.media_root).mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=settings.media_root), name="media")
 app.mount("/player", StaticFiles(directory="frontend/player", html=True), name="player")
 app.mount("/admin-ui", StaticFiles(directory="frontend/admin", html=True), name="admin-ui")
+app.mount("/audience", StaticFiles(directory="frontend/audience", html=True), name="audience")
 
 app.include_router(auth.router)
 app.include_router(r1a.router)
@@ -72,6 +73,7 @@ app.include_router(r1b.router)
 app.include_router(admin.router)
 app.include_router(leaderboard.router)
 app.include_router(player.router)
+app.include_router(audience.router)
 
 @app.exception_handler(IntegrityError)
 async def integrity_error_handler(request: Request, exc: IntegrityError):

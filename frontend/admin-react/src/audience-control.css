@@ -1,0 +1,31 @@
+/* Audience Control only. Keep the shared admin stylesheet and other pages intact. */
+.audience-control{display:grid;gap:24px;min-width:0}
+.audience-control .audience-intro{margin:-8px 0 4px;max-width:72ch;color:#62727e;line-height:1.75}
+.audience-control .panel{margin:0;padding:clamp(22px,2.5vw,32px)}
+.audience-control .panel-head{margin-bottom:26px}
+.audience-control .panel-head p{max-width:76ch}
+.audience-control .audience-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.audience-control .audience-setting{min-width:0;border:1px solid #dce3e8;border-radius:7px;padding:24px;display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;gap:24px;background:#fafbfc}
+.audience-control .audience-setting h3{margin:0 0 10px;font-size:14px;font-weight:600;color:#344b5d}
+.audience-control .audience-setting p{margin:0;color:#62727e;font-size:12px;line-height:1.8;max-width:55ch}
+.audience-control .audience-toggle{display:inline-flex;gap:14px;align-items:center;justify-content:space-between;min-width:132px;min-height:52px;padding:10px 14px;border:1px solid #aebcc7;border-radius:6px;background:#fff;color:#526371;font-size:12px;font-weight:700;letter-spacing:.06em}
+.audience-control .audience-toggle-track{width:42px;height:24px;flex-shrink:0;border-radius:20px;background:#c2ccd4;padding:3px;display:block}
+.audience-control .audience-toggle-track>span{display:block;width:18px;height:18px;border-radius:50%;background:white;box-shadow:0 1px 3px #24313d24}
+.audience-control .audience-toggle[aria-checked=true]{background:#edf5f1;border-color:#76998a;color:#285e48}
+.audience-control .audience-toggle[aria-checked=true] .audience-toggle-track{background:#39755b}
+.audience-control .audience-toggle[aria-checked=true] .audience-toggle-track>span{transform:translateX(18px)}
+.audience-control .audience-toggle:hover:not(:disabled){box-shadow:0 0 0 3px #344b5d0c}
+.audience-control .audience-toggle:focus-visible{outline:2px solid #346589;outline-offset:4px}
+.audience-control .audience-status{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:28px;margin:0}
+.audience-control .audience-status>div{min-width:0}
+.audience-control .audience-status dt{font-size:11px;color:#71808c;margin-bottom:10px}
+.audience-control .audience-status dd{margin:0;line-height:1.6;font-weight:550;overflow-wrap:anywhere}
+.audience-control .audience-sync-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#39755b;margin-right:8px}
+.audience-control .audience-status-footer{border-top:1px solid #e5e9ed;margin-top:28px;padding-top:22px;display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
+.audience-control .audience-status-footer .help{margin:0;line-height:1.9}
+.audience-control .audience-status-footer a{display:inline-flex;align-items:center;justify-content:center;min-height:46px;text-decoration:none}
+.audience-control .audience-review-state{padding:16px 18px;background:#f4f6f8;border-radius:5px;font-size:12px;color:#526371;line-height:1.7;margin:0 0 24px}
+.audience-control .audience-review-actions{gap:16px}
+.audience-control .audience-review-actions .button{min-height:48px;min-width:168px}
+@media(max-width:1050px){.audience-control .audience-settings{grid-template-columns:1fr}.audience-control .audience-setting{flex-direction:row;align-items:center}.audience-control .audience-status{grid-template-columns:1fr 1fr}.audience-control .audience-status>div:last-child{grid-column:1/-1}}
+@media(max-width:600px){.audience-control{gap:20px}.audience-control .audience-setting{padding:20px;flex-direction:column;align-items:stretch;gap:18px}.audience-control .audience-toggle{align-self:flex-start}.audience-control .audience-status{grid-template-columns:1fr;gap:22px}.audience-control .audience-status-footer{align-items:stretch}.audience-control .audience-status-footer a{width:100%}.audience-control .audience-review-actions{display:grid;grid-template-columns:1fr;gap:12px}.audience-control .audience-review-actions .button{width:100%;min-width:0}}
