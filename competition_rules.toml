@@ -4,10 +4,10 @@ version = "2026-10-round1-v1"
 
 [r1a]
 advance_mode = "AUTO"           # MANUAL or AUTO
-auto_advance_delay_ms = 8000      # finalized result/leaderboard interval
-show_results_after_each_question = true
+auto_advance_delay_ms = 3000     # finalized result/leaderboard interval
+show_results_after_each_question = false
 decay_enabled = false
-question_count = 23
+question_count = 17
 question_duration_ms = 30000       # 30 seconds
 full_score_until_ms = 10000       # full score through 10 seconds
 decay_end_ms = 25000            # minimum score reached at 25 seconds
@@ -19,8 +19,8 @@ unanswered_score = 0
 [r1b]
 turn_count = 4                     # fixed: matches the four relay/player slots
 show_results_after_each_question = false
-total_answering_budget_ms = 1680000 # 28 minutes
+total_answering_budget_ms = 1200000 # 20 minutes
 correct_score = 4000
 wrong_score = -1500
 skip_unanswered_score = 0
-default_timer_mode = "CONTINUOUS" # or PAUSE_DURING_HANDOVER
+default_timer_mode = "PAUSE_DURING_HANDOVER" # or PAUSE_DURING_HANDOVER
