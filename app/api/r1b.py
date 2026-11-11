@@ -365,6 +365,11 @@ async def submit(data: SubmitNumeric, user=Depends(require_player), db: AsyncSes
     team_state = await locked_state(db, user["team_id"], round_obj)
     receipt = await db.scalar(select(R1BReceipt).where(R1BReceipt.id == receipt.id)
                               .with_for_update().execution_options(populate_existing=True))
+    if receipt is None:
+        # An authorized rehearsal reset may have invalidated the admitted turn
+        # while this request was between its two transactions.
+        raise HTTPException(409, {"code": "SUBMISSION_STATE_CHANGED",
+            "message": "Round state changed while recording this answer; refresh and sign in again"})
     await resolve_receipt(db, receipt, round_obj, team_state)
     wrote = perf_counter()
     await db.commit()
@@ -378,6 +383,9 @@ async def submit(data: SubmitNumeric, user=Depends(require_player), db: AsyncSes
         from ..question_reveal import read_leaderboard
         board = await read_leaderboard(db, "R1B", user["team_id"], include_intermediate=True)
         submission = await db.get(Submission, receipt.submission_id)
+        if submission is None:
+            raise HTTPException(409, {"code": "SUBMISSION_STATE_CHANGED",
+                "message": "Round state changed while recording this answer; refresh and sign in again"})
         response.update({"result": submission.result, "points": submission.points,
                          "score_total": board["mine"]["score"] if board.get("mine") else None,
                          "rank": board["mine"]["rank"] if board.get("mine") else None,

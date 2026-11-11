@@ -196,8 +196,18 @@ async def snapshot(db, *, admin=False, now=None):
                              for row in board["data"][:16]]
     if view == "LEADERBOARD" and board is None:
         view = "RESULTS_PENDING"
+    # Final publication may be projected without forcing the optional relay
+    # review. Explicit review slides remain available to the host unchanged.
+    combined = False
+    if (a and b and a.status == b.status == "ENDED" and settings.leaderboard_visible
+            and view in ("LEADERBOARD", "RESULTS_PENDING", "REVIEW_READY", "THANK_YOU")):
+        from .combined_leaderboard import read_combined
+        final_board = await read_combined(db)
+        if final_board["published"]:
+            board = final_board
+            view, combined = "LEADERBOARD", True
     result = {"version": 1, "snapshot_at": now, "revision": revision,
-              "view": view, "round_code": r.code if r else "R1A",
+              "view": view, "round_code": "R1" if combined else r.code if r else "R1A",
               "round_status": r.status if r else "DRAFT", "paused": bool(r and r.status == "PAUSED"),
               "question": question, "answer": answer, "leaderboard": board,
               "question_count": (round_rules(r).r1a.question_count if r and r.code == "R1A"

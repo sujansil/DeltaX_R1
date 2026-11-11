@@ -1,5 +1,10 @@
 # Round 1 development reset patch
 
+**Superseded:** use [R1_FEATURE_REPORT.md](R1_FEATURE_REPORT.md) and the current
+source. The old development-only guard and bundled reset-patch ZIP do not meet
+the current rehearsal database authorization requirements. Reset now requires an
+operator-attested disposable rehearsal database and rejects LIVE and PAUSED rounds.
+
 ## Install
 
 1. Extract the ZIP at the project root, preserving paths.

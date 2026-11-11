@@ -59,6 +59,9 @@ let checks = 0,
   expired = false,
   nextQ = 2;
 let rejectNextAudienceWrite=false;
+let combinedPublished=false;
+const combinedRows=Array.from({length:19},(_,i)=>({rank:i+1,team_id:i+1,team_code:'T'+String(i+1).padStart(2,'0'),team_name:i?'TEAM '+(i+1):'Number Ninjas',r1a_score:4000-i*500,r1b_score:-1500,score:2500-i*500}));
+const combinedPayload=()=>({round_code:'R1',ready:rounds.every(r=>r.status==='ENDED'),published:combinedPublished,final:combinedPublished,publication_id:combinedPublished?6:null,published_at:combinedPublished?new Date().toISOString():null,data:rounds.every(r=>r.status==='ENDED')?combinedRows:[],total_teams:19,ties:[],qualification:{status:combinedPublished?'READY':'NOT_PUBLISHED',team_ids:combinedPublished?combinedRows.slice(0,16).map(r=>r.team_id):[]}});
 let audienceState={revision:0,round_code:'R1A',view:'STANDBY',snapshot_at:new Date().toISOString(),paused:false,question:null,
  controls:{preview_upcoming:false,leaderboard_visible:false},review:{ended:false,step:-1,total_slides:8,can_start:false,can_next:false}};
 let rounds = [
@@ -163,7 +166,8 @@ async function routes(page) {
     if (p === "/api/admin/dashboard")
       return send({
         server_now: new Date().toISOString(),
-        environment: "development",
+        environment: "rehearsal",
+        reset_control:{authorized:true,available:rounds.every(r=>!['LIVE','PAUSED'].includes(r.status)),reason:rounds.some(r=>['LIVE','PAUSED'].includes(r.status))?'End both live and paused rounds first.':'Disposable rehearsal database authorized.'},
         rounds,
         r1a_progress: { accepted: 3, unanswered: 1, finalized: 4 },
         r1b_teams: {
@@ -202,6 +206,11 @@ async function routes(page) {
           },
         ],
       });
+    if(p==='/api/admin/rounds/reset'){
+      assert.equal(body.confirmation,'RESET ROUND 1');assert(body.reason.trim());
+      rounds.forEach(r=>{r.status='DRAFT';r.position=0;r.question_active=false;});combinedPublished=false;
+      return send({ok:true,affected_records:{score_events:2,submissions:2}});
+    }
     if (p.startsWith("/api/admin/rounds/") && method === "POST") {
       const r = rounds.find((r) => r.code === body.round_code);
       r.status =
@@ -306,6 +315,8 @@ async function routes(page) {
         ],
       });
     if (p === "/api/admin/leaderboard/current") return send({published:false,data:[]});
+    if (p === "/api/admin/leaderboard/combined") return send(combinedPayload());
+    if (p === "/api/admin/leaderboard/publish" && body.round_code==='R1') {combinedPublished=true;return send({...combinedPayload(),scope:{round_code:'R1'}});}
     if (p === "/api/admin/leaderboard/publish")
       return send({
         published: true,
@@ -380,7 +391,19 @@ try {
   await page.getByLabel("Password", { exact: true }).fill("fixture-password");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("heading", { name: "Round controls" }).waitFor();
+  const maintenanceCopy=await page.locator('.maintenance-panel').innerText();
+  assert.match(maintenanceCopy,/This deletes R1 competition state/);
+  assert.match(maintenanceCopy,/admin-selected R1\(b\) timer configuration/);
+  assert(!maintenanceCopy.includes('historical records'));checks++;
   checks++;
+  await page.getByLabel('Audited reason',{exact:true}).fill('Another disposable rehearsal');
+  await page.getByLabel('Type RESET ROUND 1 to confirm',{exact:true}).fill('incorrect');
+  await page.getByRole('button',{name:'Reset both rounds',exact:true}).click();
+  assert.equal(calls.filter(c=>c.p==='/api/admin/rounds/reset').length,0);
+  await page.getByLabel('Type RESET ROUND 1 to confirm',{exact:true}).fill('RESET ROUND 1');
+  await page.getByRole('button',{name:'Reset both rounds',exact:true}).click();
+  await page.getByRole('status').filter({hasText:'Round 1 reset completed'}).waitFor();
+  assert.equal(calls.filter(c=>c.p==='/api/admin/rounds/reset').length,1);checks++;
   if (shots)
     await page.screenshot({
       path: shots + "/admin-overview.png",
@@ -509,6 +532,7 @@ try {
   checks++;
   await page.getByRole("button", { name: "Results", exact: true }).click();
   assert.equal(await page.getByRole("button",{name:"Publish final R1A",exact:true}).count(),1);checks++;
+  assert(await page.getByRole('button',{name:'Publish final combined R1',exact:true}).isDisabled());checks++;
   rounds[1].status="ENDED";
   await page.reload();await page.getByRole("button", { name: "Results", exact: true }).click();
   await page.getByRole("button", { name: "Publish final R1B", exact: true }).click();
@@ -519,6 +543,17 @@ try {
   await page
     .getByRole("heading", { name: "Snapshot published in this session" })
     .waitFor();
+  rounds[0].status='ENDED';
+  await page.reload();await page.getByRole('button',{name:'Results',exact:true}).click();
+  const combinedPanel=page.locator('.panel').filter({has:page.getByRole('heading',{name:'Combined Round 1 standings',exact:true})});
+  await combinedPanel.getByText('Admin preview · not yet published',{exact:false}).waitFor();
+  assert.equal(await combinedPanel.locator('tbody tr').count(),19);
+  assert.match(await combinedPanel.locator('tbody tr').last().innerText(),/-1,500/);
+  await page.getByRole('button',{name:'Publish final combined R1',exact:true}).click();
+  assert.equal(calls.filter(c=>c.p==='/api/admin/leaderboard/publish'&&c.body.round_code==='R1').length,0);
+  await page.getByRole('dialog').getByRole('button',{name:'Confirm',exact:true}).click();
+  await combinedPanel.getByText('Immutable publication #6',{exact:false}).waitFor();
+  assert(await page.getByRole('button',{name:'Publish final combined R1',exact:true}).isDisabled());checks++;
   checks++;
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download Excel" }).click();
@@ -528,6 +563,10 @@ try {
   await page.getByText("fixture-admin", { exact: true }).waitFor();
   checks++;
   await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await page.getByLabel('Audited reason',{exact:true}).fill('Rehearsal after final publication');
+  await page.getByLabel('Type RESET ROUND 1 to confirm',{exact:true}).fill('RESET ROUND 1');
+  await page.getByRole('button',{name:'Reset both rounds',exact:true}).click();
+  await page.getByRole('status').filter({hasText:'Round 1 reset completed'}).waitFor();
   await page
     .locator(".round-card")
     .first()
@@ -545,7 +584,7 @@ try {
     .waitFor();
   assert.equal(rounds[0].status, "LIVE");
   checks++;
-  await page.getByRole("button",{name:"Reset both rounds",exact:true}).waitFor();checks++;
+  await page.getByRole("button",{name:"Reset both rounds",exact:true}).waitFor();assert(await page.getByRole('button',{name:'Reset both rounds',exact:true}).isDisabled());checks++;
   await page.getByRole("button", { name: "Questions", exact: true }).click();
   await page.getByRole("button", { name: "View", exact: true }).first().click();
   await page.getByLabel("Question text", { exact: false }).waitFor();

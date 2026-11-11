@@ -23,6 +23,7 @@ async function scenario(state,{reducedMotion='no-preference',width=390,height=84
   if(p.endsWith('/login'))return fulfill({access_token:'fixture-token'});
   if(revoked)return fulfill({detail:{code:'SESSION_INACTIVE',message:'Session expired or revoked; log in again'}},401);
   if(p==='/api/player/bootstrap'){const d=clone(state);d.snapshot_at=new Date().toISOString();return fulfill(d)}
+  if(p==='/api/leaderboard/final'){assert.equal(req.headers().authorization,undefined);return fulfill(state.combined||{published:false,data:[]});}
   if(p.endsWith('/heartbeat')||p.endsWith('/departing'))return fulfill({ok:true});
   if(p.endsWith('/logout')){revoked=true;return fulfill({ok:true})}
   if(p.endsWith('/mine'))return fulfill({published:true,rank:12,score:4250,published_at:new Date().toISOString()});
@@ -67,6 +68,13 @@ try{
  assert.equal(await b.page.getByText(/results shown|results remain|leaderboard revealed|question ends/i).count(),0);checks++;
  const submittedTurn=r.draft.turn_id;await b.page.getByLabel('Your numerical answer').fill('42');await b.page.getByRole('button',{name:'Submit answer',exact:true}).click();await b.page.getByRole('heading',{name:'Pass to the next player.'}).waitFor();assert.equal(await b.page.locator('.score-reveal').count(),0);assert.equal(await b.page.locator('.strip-score').count(),0);assert.equal(await b.page.getByText(/results shown|results remain|leaderboard revealed|question ends/i).count(),0);assert.equal(b.submits(),1);const submittedBody=b.calls.find(c=>c.p==='/api/r1b/submit').body;assert.equal(submittedBody.answer,'42');assert.equal(submittedBody.turn_id,submittedTurn);checks++;
  r.available_actions=[];r.player_state.screen='FINISHED';r.player_state.turn_status='FINISHED';r.score_total=4000;r.own_outcome={accepted:true,finalized:true,score_revealed:true,submission_id:100,question_position:1,player_number:1,points:4000,result:'CORRECT'};r.leaderboard={published:true,final:true,publication_id:9,published_at:new Date().toISOString(),total_teams:1,data:[{team_id:1,team_name:'VECTOR FOUR',rank:1,score:4000}],mine:{team_id:1,rank:1,score:4000}};await b.page.getByRole('button',{name:'Refresh',exact:true}).click();await b.page.locator('.score-reveal').waitFor();await b.page.getByRole('button',{name:'Continue'}).click();await b.page.getByRole('heading',{name:'R1B results'}).waitFor();assert.match(await b.page.locator('.strip-score').innerText(),/4,000/);checks++;
+ assert.equal(await b.page.getByRole('heading',{name:'Final Round 1 standings',exact:true}).count(),0);
+ r.combined={published:true,round_code:'R1',publication_id:10,total_teams:19,ties:[{rank:16,score:-5000,team_ids:[16,17]}],qualification:{status:'BLOCKED_CUTOFF_TIE'},data:Array.from({length:19},(_,i)=>({team_id:i+1,team_name:i?'TEAM '+(i+1):'VECTOR FOUR',rank:i===16?16:i+1,r1a_score:i===16?-3500:4000-i*500,r1b_score:-1500,score:i===16?-5000:2500-i*500}))};
+ await b.page.getByRole('heading',{name:'Final Round 1 standings',exact:true}).waitFor({timeout:40000});
+ assert.equal(await b.page.locator('.combined-board tbody tr').count(),19);
+ assert.equal(await b.page.locator('.combined-board tbody tr').last().locator('td').nth(2).innerText(),'-1,500');
+ await b.page.getByText('R2 qualification is pending the official tie policy at the 16-team cutoff.',{exact:true}).waitFor();
+ assert(await b.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));checks++;
  assert.deepEqual(b.errors,[]);await b.page.close();
  // Shared-device handover and narrow viewport: question remains hidden until READY.
  const waiting=fixture('R1B');waiting.question=null;waiting.draft=null;waiting.available_actions=['READY'];waiting.player_state.screen='HANDOVER_READY';waiting.player_state.current_player=2;waiting.player_state.turn_status='WAITING';
@@ -127,6 +135,37 @@ try{
   r.revoke();await r.page.getByRole('button',{name:'Refresh',exact:true}).click();await r.page.getByRole('button',{name:'Enter the arena'}).waitFor();assert.match(await r.page.locator('[role=alert]').innerText(),/expired|revoked/);
   assert.deepEqual(r.errors,[]);await r.context.close();checks++;
  }
+ // Eight concurrent terminal clients, two virtual minutes each. Measure the
+ // actual component's fetch schedule; no database or real competition API.
+ const pollingClients=await Promise.all(Array.from({length:8},async(_,i)=>{
+  const snapshot=fixture('R1B');snapshot.round.status='ENDED';snapshot.question=null;
+  snapshot.draft=null;snapshot.available_actions=[];snapshot.player_state.screen='ENDED';
+  snapshot.timer.running=false;snapshot.timer.remaining_ms=0;
+  const context=await browser.newContext({viewport:{width:390,height:844},reducedMotion:'reduce'});
+  await context.addInitScript(({snapshot,hidden})=>{
+   localStorage.setItem('r1token','fixture-token');window.__pollCounts={};
+   Object.defineProperty(document,'hidden',{get:()=>hidden});
+   window.fetch=async(input)=>{
+    const p=new URL(String(input),location.origin).pathname;
+    window.__pollCounts[p]=(window.__pollCounts[p]||0)+1;
+    const data=p==='/api/player/bootstrap'?{...snapshot,snapshot_at:new Date().toISOString()}
+     :p==='/api/leaderboard/final'?{published:false,data:[]}:{ok:true};
+    return new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}});
+   };
+  },{snapshot,hidden:i>=4});
+  const page=await context.newPage();await page.clock.install();
+  await page.goto(base+'/player/');await page.getByText('Connected',{exact:true}).waitFor();
+  return {context,page,hidden:i>=4};
+ }));
+ await Promise.all(pollingClients.map(c=>c.page.clock.runFor(120000)));
+ const pollingCounts=await Promise.all(pollingClients.map(async c=>{
+  const counts=await c.page.evaluate(()=>window.__pollCounts);
+  const finals=counts['/api/leaderboard/final']||0;
+  assert(finals>=1&&finals<=(c.hidden?2:5),JSON.stringify(counts));
+  assert((finals-1)/(counts['/api/player/bootstrap']-1)<0.05,JSON.stringify(counts));
+  await c.context.close();return finals;
+ }));
+ console.log(`Final standings polling: ${pollingCounts.join(', ')} requests across 8 clients over 120 virtual seconds (4 visible, 4 hidden).`);checks++;
  // Existing admin page plus functional management additions.
  const admin=await browser.newContext({viewport:{width:1200,height:900}});
  await admin.addInitScript(()=>localStorage.setItem('adminToken','fixture-admin'));

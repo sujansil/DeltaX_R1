@@ -21,6 +21,8 @@ pytestmark = [pytest.mark.database, pytest.mark.asyncio(loop_scope="session"),
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def ctx():
+    from dataclasses import replace
+    from app.competition_rules import configured_rules
     require_disposable_test_database()
     from app.db import Base, get_db
     from app.main import app
@@ -37,9 +39,11 @@ async def ctx():
     local=async_sessionmaker(engine,expire_on_commit=False)
     async with local() as db:
         db.add(Admin(username="audience-fixture",password_hash="not-an-account-password"))
-        a=Round(code="R1A",status="DRAFT");b=Round(code="R1B",status="DRAFT")
+        rules=configured_rules()
+        rules=replace(rules,r1a=replace(rules.r1a,auto_advance_delay_ms=8000))
+        a=Round(code="R1A",status="DRAFT",rules_version=rules.version,rules_snapshot=rules.snapshot_json());b=Round(code="R1B",status="DRAFT")
         db.add_all([a,b]);await db.flush()
-        for p in range(1,24):
+        for p in range(1,rules.r1a.question_count+1):
             q=Question(round_code="R1A",position=p,answer_type="MCQ",question_text=f"Question {p}: $2^2$?",question_image_url="/media/fixture.png")
             db.add(q);await db.flush()
             options=[QuestionOption(question_id=q.id,position=n,option_text=str(n),image_url="/media/option.png" if n==4 else None) for n in range(1,5)]

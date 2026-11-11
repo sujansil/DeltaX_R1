@@ -203,6 +203,11 @@ async def submit(data: SubmitMCQ, user=Depends(require_player), db: AsyncSession
     timing["lock_wait_ms"] += (perf_counter() - waited) * 1000
     receipt = await db.scalar(select(R1AReceipt).where(R1AReceipt.id == receipt.id)
                               .with_for_update().execution_options(populate_existing=True))
+    if receipt is None:
+        # A rehearsal reset can commit between admission and this second
+        # transaction. Never recreate or score an answer from the previous run.
+        raise HTTPException(409, {"code": "SUBMISSION_STATE_CHANGED",
+            "message": "Round state changed while recording this answer; refresh and sign in again"})
     wrote = perf_counter()
     if receipt.status == "PENDING":
         await resolve_receipt(db, receipt, round_obj)
@@ -214,5 +219,9 @@ async def submit(data: SubmitMCQ, user=Depends(require_player), db: AsyncSession
         raise HTTPException(code, detail)
     # Acceptance is immediate; correctness and score reveal only at question close.
     submission = await db.get(Submission, receipt.submission_id)
+    if submission is None:
+        # Reset can also finish after finalization commits but before this read.
+        raise HTTPException(409, {"code": "SUBMISSION_STATE_CHANGED",
+            "message": "Round state changed while recording this answer; refresh and sign in again"})
     return {"position": receipt.question_position, "accepted": True, "result": None,
             "points": None, "elapsed_ms": submission.elapsed_ms}

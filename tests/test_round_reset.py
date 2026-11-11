@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 from datetime import timedelta
@@ -25,11 +26,12 @@ async def clear_database():
     from app.db import SessionLocal
     from app.models import (Admin, AdminAction, LeaderboardSnapshot, PlayerDevice,
                             Question, QuestionOption, R1BDraft, Round, RoundEnrollment,
-                            ScoreEvent, Submission, Team, TeamRoundState)
+                            ScoreEvent, Submission, Team, TeamRoundState,
+                            RehearsalAuthorization)
     async with SessionLocal() as db:
         for model in (AdminAction, LeaderboardSnapshot, ScoreEvent, Submission,
                       R1BDraft, PlayerDevice, TeamRoundState, RoundEnrollment,
-                      QuestionOption, Question, Round, Admin, Team):
+                      QuestionOption, Question, Round, Admin, Team, RehearsalAuthorization):
             await db.execute(delete(model))
         await db.commit()
 
@@ -42,14 +44,21 @@ async def reset_fixture():
     await clear_database()
 
 
-async def seed_reset_case(status="PAUSED"):
+async def seed_reset_case(status="ENDED"):
     from app.db import SessionLocal
     from app.models import (Admin, AdminAction, LeaderboardSnapshot, PlayerDevice,
                             Question, QuestionOption, R1BDraft, Round, RoundEnrollment,
-                            ScoreEvent, Submission, Team, TeamRoundState)
+                            ScoreEvent, Submission, Team, TeamRoundState,
+                            RehearsalAuthorization)
+    from app.competition_rules import configured_rules
     from app.timing import utc_now
     now = utc_now()
     async with SessionLocal() as db:
+        name, oid = (await db.execute(text(
+            "SELECT current_database(), oid FROM pg_database WHERE datname=current_database()"
+        ))).one()
+        db.add(RehearsalAuthorization(id=1, database_name=name, database_oid=oid,
+            token_sha256=hashlib.sha256(RESET_TEST_TOKEN.encode()).hexdigest()))
         admin = Admin(username="reset-admin", password_hash="kept-admin-password")
         team = Team(code="RST", name="Reset Team", login_username="reset-team",
                     password_hash="kept-team-password", activation_token_hash="a" * 64,
@@ -61,10 +70,10 @@ async def seed_reset_case(status="PAUSED"):
         r1b = Round(code="R1B", status=status, started_at=now, paused_at=now,
                     current_position=2, question_started_at=now,
                     leaderboard_published_at=now,
-                    r1b_timer_mode="PAUSE_DURING_HANDOVER")
+                    r1b_timer_mode="CONTINUOUS", r1b_timer_mode_selected=True)
         db.add_all((r1a, r1b)); await db.flush()
         r1a_questions = []
-        for position in range(1, 24):
+        for position in range(1, configured_rules().r1a.question_count + 1):
             question = Question(round_code="R1A", position=position,
                                 question_text="kept question", answer_type="MCQ",
                                 question_image_url="/media/kept.png" if position == 1 else None)
@@ -105,13 +114,19 @@ async def seed_reset_case(status="PAUSED"):
         return admin.id, team.id
 
 
+RESET_TEST_TOKEN = "disposable-reset-tests-token-at-least-32-characters"
+
+
 def development(monkeypatch):
     from app.api import admin
-    monkeypatch.setattr(admin.settings, "environment", "development")
+    monkeypatch.setattr(admin.settings, "environment", "rehearsal")
+    monkeypatch.setattr(admin.settings, "r1_reset_enabled", True)
+    monkeypatch.setattr(admin.settings, "r1_rehearsal_token", RESET_TEST_TOKEN)
+    monkeypatch.setattr(admin.settings, "r1_reset_database_name", "round1_test")
     return admin
 
 
-async def test_reset_requires_admin_and_development(monkeypatch):
+async def test_reset_requires_admin_and_explicit_rehearsal_authorization(monkeypatch):
     from app.main import app
     from app.security import create_token
     from app.api import admin
@@ -125,7 +140,7 @@ async def test_reset_requires_admin_and_development(monkeypatch):
         admin_token = create_token("reset-admin", "admin")
         monkeypatch.setattr(admin.settings, "environment", "production")
         assert (await client.post("/api/admin/rounds/reset", json=body,
-                                  headers={"Authorization": f"Bearer {admin_token}"})).status_code == 404
+                                  headers={"Authorization": f"Bearer {admin_token}"})).status_code == 403
 
 
 async def test_wrong_confirmation_and_live_round_are_rejected(monkeypatch):
@@ -144,8 +159,8 @@ async def test_wrong_confirmation_and_live_round_are_rejected(monkeypatch):
         with pytest.raises(HTTPException) as live:
             await admin.reset_round_one(admin.ResetRoundOneIn(
                 reason="because", confirmation="RESET ROUND 1"), {"sub": "reset-admin"}, db)
-        assert live.value.detail["code"] == "ROUND_LIVE"
-        assert "Pause or end" in live.value.detail["message"]
+        assert live.value.detail["code"] == "ROUND_ACTIVE"
+        assert "End the active rounds" in live.value.detail["message"]
 
 
 async def test_reset_clears_state_preserves_configuration_and_revokes_tokens(monkeypatch):
@@ -155,6 +170,7 @@ async def test_reset_clears_state_preserves_configuration_and_revokes_tokens(mon
                             ScoreEvent, Submission, Team, TeamRoundState)
     from app.security import create_token
     from app.main import app
+    from app.competition_rules import configured_rules
     admin = development(monkeypatch)
     admin_id, team_id = await seed_reset_case()
     old_token = create_token("RST", "team", team_id, "old-session", "R1A", 1)
@@ -165,6 +181,7 @@ async def test_reset_clears_state_preserves_configuration_and_revokes_tokens(mon
         assert result["affected_records"] == {
             "player_sessions_revoked": 1, "score_events": 1, "submissions": 1,
             "r1a_receipts": 0,
+            "r1b_receipts": 0,
             "numerical_drafts": 1, "relay_team_states": 1, "enrolments": 1,
             "leaderboard_snapshots": 1,
         }
@@ -174,20 +191,21 @@ async def test_reset_clears_state_preserves_configuration_and_revokes_tokens(mon
                    and r.paused_at is None and r.question_started_at is None
                    and r.current_position is None and r.leaderboard_published_at is None
                    for r in rounds)
-        assert rounds[1].r1b_timer_mode == "PAUSE_DURING_HANDOVER"
+        assert rounds[1].r1b_timer_mode == "CONTINUOUS"
+        assert rounds[1].r1b_timer_mode_selected is True
         for model in (LeaderboardSnapshot, ScoreEvent, Submission, R1BDraft,
                       TeamRoundState, RoundEnrollment):
             assert await db.scalar(select(func.count()).select_from(model)) == 0
         assert await db.scalar(select(func.count()).select_from(Team)) == 1
-        assert await db.scalar(select(func.count()).select_from(Question)) == 27
-        assert await db.scalar(select(func.count()).select_from(QuestionOption)) == 23
+        assert await db.scalar(select(func.count()).select_from(Question)) == configured_rules().r1a.question_count + 4
+        assert await db.scalar(select(func.count()).select_from(QuestionOption)) == configured_rules().r1a.question_count
         team = await db.get(Team, team_id)
         assert (team.password_hash, team.activation_token_hash) == ("kept-team-password", "a" * 64)
         assert await db.scalar(select(func.count()).select_from(Admin)) == 1
         device = await db.scalar(select(PlayerDevice).where(PlayerDevice.session_id == "old-session"))
         assert not device.active and device.revoked_at and device.revoked_by_admin_id == admin_id
         actions = (await db.scalars(select(AdminAction).order_by(AdminAction.id))).all()
-        assert [a.action for a in actions] == ["PRESERVED_HISTORY", "RESET_ROUND_ONE"]
+        assert [a.action for a in actions] == ["PRESERVED_HISTORY", "AUDIENCE_STATE_V1", "RESET_ROUND_ONE"]
         details = json.loads(actions[-1].details)
         assert details["reason"] == "rerun after rehearsal"
         assert details["affected_records"] == result["affected_records"]
@@ -255,7 +273,7 @@ async def test_reset_failure_rolls_back_every_change(monkeypatch):
         async with SessionLocal() as db:
             assert await db.scalar(select(func.count()).select_from(Submission)) == 1
             assert await db.scalar(select(PlayerDevice.active)) is True
-            assert (await db.scalar(select(Round.status).where(Round.code == "R1A"))) == "PAUSED"
+            assert (await db.scalar(select(Round.status).where(Round.code == "R1A"))) == "ENDED"
     finally:
         async with SessionLocal() as db:
             await db.execute(text("DROP TRIGGER IF EXISTS fail_reset_audit ON admin_actions"))

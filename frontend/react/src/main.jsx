@@ -121,6 +121,26 @@ function QuestionLeaderboard({state}) {
   <p className="next-question-note">{r1b?'These scores are from the latest published R1B snapshot.':board?.final?'WizTime is complete. Your recorded results are saved.':state.round.status==='ENDED'?'WizTime is complete. Your recorded results are saved.':'The next question opens when the organiser reveals it.'}</p>
  </section>;
 }
+function FinalRoundOne({state,children}) {
+ const [board,setBoard]=useState(null),[error,setError]=useState('');
+ const terminal=state.round.status==='ENDED'||['FINISHED','EXPIRED','ENDED'].includes(state.player_state.screen);
+ useEffect(()=>{
+  if(!terminal){setBoard(null);setError('');return;}
+  let live=true,timer;const controller=new AbortController();
+  async function poll(){try{const next=await api('/api/leaderboard/final',{signal:controller.signal});if(live){setBoard(next.published?next:null);setError('');}}catch(e){if(live&&!controller.signal.aborted)setError('Final Round 1 standings are temporarily unavailable. Retrying…');}finally{if(live)timer=setTimeout(poll,document.hidden?120000:30000);}}
+  poll();return()=>{live=false;clearTimeout(timer);controller.abort();};
+ },[terminal,state.identity.session_id]);
+ if(!board)return <>{children}{error&&<p className="micro-copy" role="status">{error}</p>}</>;
+ return <section className="question-leaderboard combined-board" aria-label="Final Round 1 standings">
+  <span className="eyebrow">ROUND ONE / PUBLISHED FINAL STANDINGS</span><h1>Final Round 1 standings</h1>
+  <p className="board-intro">R1(a) + R1(b) · Immutable publication #{board.publication_id}</p>
+  <div className="board-table-wrap" tabIndex="0" aria-label={`Final Round 1 leaderboard, ${board.data.length} teams`}><table><thead><tr><th scope="col">Rank</th><th scope="col">Team Name</th><th scope="col">R1(a) Score</th><th scope="col">R1(b) Score</th><th scope="col">Combined Total</th></tr></thead><tbody>{board.data.map(row=><tr key={row.team_id} className={row.team_id===state.identity.team_id?'my-team':''}><td>#{row.rank}</td><th scope="row">{row.team_name}{row.team_id===state.identity.team_id&&<small>You</small>}</th><td>{formatScore(row.r1a_score)}</td><td>{formatScore(row.r1b_score)}</td><td>{formatScore(row.score)}</td></tr>)}</tbody></table></div>
+  <p className="micro-copy">All {board.total_teams} participating teams. Scroll the table to see every score.</p>
+  {!!board.ties?.length&&<p className="micro-copy">Equal totals share a rank. The competition tie-break policy is unresolved.</p>}
+  {board.qualification?.status==='BLOCKED_CUTOFF_TIE'&&<p className="micro-copy">R2 qualification is pending the official tie policy at the 16-team cutoff.</p>}
+  {error&&<p className="micro-copy" role="status">{error}</p>}
+ </section>;
+}
 function Confirm({title,text,onCancel,onConfirm}){const cancel=useRef(null);useEffect(()=>{cancel.current?.focus();const fn=e=>{if(e.key==='Escape')onCancel();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn)},[]);
  return <div className="modal-backdrop" onClick={onCancel}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Tab'){const b=e.currentTarget.querySelectorAll('button');if(e.shiftKey&&document.activeElement===b[0]){e.preventDefault();b[b.length-1].focus()}else if(!e.shiftKey&&document.activeElement===b[b.length-1]){e.preventDefault();b[0].focus()}}}}><h2>{title}</h2><p>{text}</p><div className="dialog-actions"><button ref={cancel} className="secondary" onClick={onCancel}>Cancel</button><button className="primary" onClick={onConfirm}>Confirm</button></div></section></div>
 }
@@ -191,7 +211,7 @@ function App(){
  </header>
  <div className="connection-row"><span className={'connection-label '+network}><span className="status-dot"/>{network==='online'?'Connected':network==='offline'?'Reconnecting · server clock continues':'Connecting'}</span><button className="text-button tiny" disabled={busy} onClick={()=>{if(snapshot.draft&&!confirm('Restore the server-saved draft? Any unsaved edits in this tab will be discarded.'))return;setError('');restoreRequested.current=true;refresh.current()}}>Refresh</button></div>
  {error&&<div className="notice error" role="alert">{error}<button className="text-button tiny" onClick={()=>setError('')}>Dismiss</button></div>}
- <div className="round-content" key={identity.round_code}>{liveQuestion?<Question key={snapshot.question.id+':'+restoreKey} state={snapshot} left={left} request={request} mutate={mutate} busy={busy} onError={setError}/>:showBoard?<QuestionLeaderboard state={snapshot}/>:autoBetween?<AutoBetween state={snapshot}/>:<Waiting state={snapshot} left={left} mutate={mutate} busy={busy}/>}</div>
+ <div className="round-content" key={identity.round_code}>{liveQuestion?<Question key={snapshot.question.id+':'+restoreKey} state={snapshot} left={left} request={request} mutate={mutate} busy={busy} onError={setError}/>:<FinalRoundOne state={snapshot}>{showBoard?<QuestionLeaderboard state={snapshot}/>:autoBetween?<AutoBetween state={snapshot}/>:<Waiting state={snapshot} left={left} mutate={mutate} busy={busy}/>}</FinalRoundOne>}</div>
  <footer className="game-footer"><span>ROUND 01 / {identity.round_code==='R1A'?'WIZTIME':'MATH RALLY'}</span><span>{identity.team_code}</span></footer>
  {logoutConfirm&&<Confirm title="Leave this session?"
    text="Your saved progress stays. Logging out releases this team device session."

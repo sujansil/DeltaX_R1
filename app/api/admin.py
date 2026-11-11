@@ -23,6 +23,7 @@ from ..r1b_finalization import effective_remaining_ms, finalize_expired_team
 from ..round_validation import validate_round_configuration
 from ..result_export import build_results_workbook
 from ..competition_rules import configured_rules, round_rules
+from ..rehearsal_safety import reset_authorization, reset_control
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 settings = get_settings()
@@ -396,7 +397,8 @@ async def dashboard(r1b_offset: int = Query(0, ge=0), r1b_limit: int = Query(100
     r1b_round = by_code.get("R1B")
     reference = (r1b_round.paused_at if r1b_round and r1b_round.status == "PAUSED"
                  and r1b_round.paused_at else now)
-    return {"server_now": now, "environment": settings.environment, "presence_semantics":
+    return {"server_now": now, "environment": settings.environment,
+            "reset_control": await reset_control(db, rounds), "presence_semantics":
             "Session presence is a server lease and does not prove a browser is physically open or closed",
             "r1a_progress": r1a_progress, "rounds": [
         {"code": r.code, "status": r.status, "position": r.current_position,
@@ -639,6 +641,14 @@ async def end_round(data: RoundAction, user=Depends(require_admin), db: AsyncSes
 
 @router.post("/leaderboard/publish")
 async def publish(data: RoundAction, user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
+    if data.round_code == "R1":
+        from ..combined_leaderboard import publish_combined, published_result
+        snap, already_published = await publish_combined(db)
+        if not already_published:
+            await audit(db, user, "PUBLISH_COMBINED_R1_LEADERBOARD",
+                        f"round=R1;publication_id={snap.id}")
+        await db.commit()
+        return {**published_result(snap), "already_published": already_published}
     if data.round_code not in ("R1A", "R1B"):
         raise admin_error(400, "ROUND_CODE_INVALID", "Unsupported round code")
     r = await lock_round(db, data.round_code, exclusive=True)
@@ -928,8 +938,6 @@ async def seed_rounds(user=Depends(require_admin), db: AsyncSession=Depends(get_
 async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
                           db: AsyncSession=Depends(get_db)):
     """Reset both Round 1 competitions in one serialized transaction."""
-    if settings.environment != "development":
-        raise HTTPException(404, "Development reset is disabled")
     reason = data.reason.strip()
     if not reason:
         raise admin_error(422, "RESET_REASON_REQUIRED", "An audited reset reason is required")
@@ -947,29 +955,37 @@ async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
     if set(by_code) != {"R1A", "R1B"}:
         raise admin_error(409, "ROUND_RECORDS_MISSING",
                           "Initialize both round records before resetting")
-    live = [code for code in ("R1A", "R1B")
-            if by_code[code].status == RoundStatus.LIVE.value]
-    if live:
-        raise admin_error(409, "ROUND_LIVE",
-                          f"Pause or end the live rounds first: {', '.join(live)}")
+    authorized, authorization_reason = await reset_authorization(db, lock=True)
+    if not authorized:
+        raise admin_error(403, "RESET_NOT_AUTHORIZED", authorization_reason)
+    active = [code for code in ("R1A", "R1B")
+              if by_code[code].status in (RoundStatus.LIVE.value, RoundStatus.PAUSED.value)]
+    if active:
+        raise admin_error(409, "ROUND_ACTIVE",
+                          f"End the active rounds first: {', '.join(active)}")
 
     now = utc_now()
     admin_id = await acting_admin_id(db, user)
     session_result = await db.execute(update(PlayerDevice).where(
-        PlayerDevice.active.is_(True)
+        PlayerDevice.active.is_(True), PlayerDevice.round_code.in_(("R1A", "R1B"))
     ).values(active=False, revoked_at=now, revoked_by_admin_id=admin_id,
-             revocation_reason="Round 1 development reset"))
+             revocation_reason="Round 1 rehearsal reset"))
     counts = {"player_sessions_revoked": session_result.rowcount}
     for key, model in (
         ("score_events", ScoreEvent),
         ("r1a_receipts", R1AReceipt),
+        ("r1b_receipts", R1BReceipt),
         ("submissions", Submission),
         ("numerical_drafts", R1BDraft),
         ("relay_team_states", TeamRoundState),
         ("enrolments", RoundEnrollment),
         ("leaderboard_snapshots", LeaderboardSnapshot),
     ):
-        result = await db.execute(delete(model))
+        statement = delete(model)
+        if hasattr(model, "round_code"):
+            codes = ("R1", "R1A", "R1B") if model is LeaderboardSnapshot else ("R1A", "R1B")
+            statement = statement.where(model.round_code.in_(codes))
+        result = await db.execute(statement)
         counts[key] = result.rowcount
 
     for round_obj in rounds:
@@ -984,10 +1000,19 @@ async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
         round_obj.rules_version = None
         round_obj.rules_snapshot = None
 
+    # Audience controls live in the append-only admin audit history. Append a
+    # fresh default instead of deleting old controls or audit records. Use the
+    # same advisory lock as concurrent audience control writes.
+    from ..audience import ACTION, LOCK_KEY, Controls
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": LOCK_KEY})
+    db.add(AdminAction(admin_id=admin_id, action=ACTION,
+                       details=Controls().model_dump_json(), created_at=now))
+
     details = json.dumps({
         "reason": reason,
         "reset_at": now.isoformat(),
         "rounds": ["R1A", "R1B"],
+        "database": settings.r1_reset_database_name,
         "affected_records": counts,
     }, sort_keys=True, separators=(",", ":"))
     db.add(AdminAction(admin_id=admin_id, action="RESET_ROUND_ONE", details=details,
@@ -997,10 +1022,25 @@ async def reset_round_one(data: ResetRoundOneIn, user=Depends(require_admin),
 
 
 @router.get("/leaderboard/current")
-async def current_leaderboard(round_code: str = Query("R1A", pattern="^R1[AB]$"),
+async def current_leaderboard(round_code: str = Query("R1A", pattern="^R1[AB]?$"),
                               user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
+    if round_code == "R1":
+        from ..combined_leaderboard import read_combined
+        return await read_combined(db)
     from ..question_reveal import read_leaderboard
     return await read_leaderboard(db, round_code)
+
+
+@router.get("/leaderboard/combined")
+async def combined_leaderboard_preview(user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
+    from ..combined_leaderboard import preview_combined
+    return await preview_combined(db)
+
+
+@router.get("/leaderboard/combined/qualifiers")
+async def combined_r2_qualifiers(user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
+    from ..combined_leaderboard import qualifying_teams
+    return await qualifying_teams(db)
 
 
 @router.get("/audit")

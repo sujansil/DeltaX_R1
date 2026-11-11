@@ -2,6 +2,11 @@
 
 Backend-first FastAPI implementation for Round 1(a) WizTime and Round 1(b) Math Rally.
 
+The rehearsal reset and final combined Round 1 standings are documented in
+[R1_FEATURE_REPORT.md](R1_FEATURE_REPORT.md), including database authorization,
+publication and qualification behavior, tests, migrations, and operator-run Azure
+VM deployment commands. Reset is disabled by default, including in development.
+
 ## Competition rules configuration
 
 Public game rules live in the single repository-root file `competition_rules.toml`.
@@ -424,7 +429,10 @@ submission or READY acceptable.
 
 ## Leaderboard publication
 
-Scores can change internally without changing the public board. Admin explicitly publishes a snapshot. The public endpoint returns the last published snapshot until another publication occurs.
+Individual subround boards retain their existing publication behavior. The final
+combined R1 board requires both subrounds to end and explicit admin publication;
+it then remains immutable. Its frozen combined ranking is the R2 qualification
+source. See the feature report for ties at the 16-team cutoff.
 
 ## Essential administration API
 

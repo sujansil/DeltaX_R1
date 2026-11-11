@@ -86,7 +86,7 @@ export function time(ms) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 export const roundName = (r) =>
-  r === "R1A" ? "WizTime · R1A" : "Math Rally · R1B";
+  r === "R1" ? "Combined Round 1" : r === "R1A" ? "WizTime · R1A" : "Math Rally · R1B";
 export function roundActions(r) {
   if (!r) return [];
   if (r.status === "DRAFT") return ["validate", "start"];

@@ -488,9 +488,12 @@ function Overview() {
         (sum, count) => sum + Number(count || 0),
         0,
       );
-      return `Round 1 reset completed. ${total} competition-state records were cleared or revoked.`;
+      return `Round 1 reset completed. R1(a) and R1(b) are ready to start again. ${total} rehearsal-state records were cleared or revoked.`;
     });
     if (ok) form.reset();
+    r.reload();
+    progress.reload();
+    timer.reload();
   }
   return (
     <>
@@ -778,31 +781,36 @@ function Overview() {
       </Panel>
       <DataState r={r}>
         {(d) =>
-          d.environment === "development" ? (
+          (
             <section className="panel maintenance-panel">
               <div className="panel-head">
                 <div>
-                  <span className="eyebrow">DEVELOPMENT MAINTENANCE</span>
+                  <span className="eyebrow">REHEARSAL MAINTENANCE</span>
                   <h2>Reset Round 1</h2>
                   <p>
-                    Resets R1A and R1B together. This is rejected while either
-                    round is live; pause or end live rounds first.
+                    Resets R1(a) and R1(b) together in an explicitly authorized
+                    rehearsal database. Both live and paused rounds must be ended first.
                   </p>
                 </div>
               </div>
               <div className="maintenance-details">
                 <p>
                   <b>Cleared:</b> submissions, score events, numerical drafts,
-                  relay progress, enrolments, published leaderboard snapshots,
+                  relay progress, enrolments, R1 leaderboard snapshots,
                   all lifecycle and question-clock timestamps, and current
-                  positions. All player sessions are revoked.
+                  positions within this authorized disposable rehearsal database.
+                  R1 player sessions are revoked. This deletes R1 competition state;
+                  it does not distinguish historical R1 runs within this database.
                 </p>
                 <p>
                   <b>Kept:</b> teams, credentials, activation details,
-                  questions, options, media, admin audit history, and the
-                  selected R1B timer mode. Database sequences are unchanged.
+                  questions, correct answers, options, media, admin audit history,
+                  configured scoring rules, and the admin-selected R1(b) timer configuration.
+                  Elapsed timers are cleared.
+                  Database sequences are unchanged.
                 </p>
               </div>
+              <Message>{d.reset_control?.available ? "Server authorization confirmed for this rehearsal database." : d.reset_control?.reason || "Reset is unavailable: the server has not authorized this database for rehearsal resets."}</Message>
               <form className="reset-form" onSubmit={resetRoundOne}>
                 <Field label="Audited reason">
                   <textarea
@@ -810,8 +818,8 @@ function Overview() {
                     rows={3}
                     required
                     maxLength={500}
-                    disabled={busy}
-                    placeholder="Why is this development reset required?"
+                    disabled={busy || !d.reset_control?.available}
+                    placeholder="Why is this rehearsal reset required?"
                   />
                 </Field>
                 <Field
@@ -822,7 +830,7 @@ function Overview() {
                     name="confirmation"
                     required
                     autoComplete="off"
-                    disabled={busy}
+                    disabled={busy || !d.reset_control?.available}
                     pattern="RESET ROUND 1"
                   />
                 </Field>
@@ -830,10 +838,11 @@ function Overview() {
                   type="submit"
                   kind="danger"
                   label="Reset both rounds"
+                  disabled={!d.reset_control?.available}
                 />
               </form>
             </section>
-          ) : null
+          )
         }
       </DataState>
     </>
@@ -1939,6 +1948,7 @@ function Submissions() {
 }
 function Results() {
   const automatic=useData("/api/admin/leaderboard/current?round_code=R1A",{interval:3000});
+  const combined=useData("/api/admin/leaderboard/combined",{interval:3000});
   const dashboard=useData("/api/admin/dashboard",{interval:3000});
   const { request, run, confirm } = useApp(),
     [scope, setScope] = useState("BOTH"),
@@ -1947,7 +1957,8 @@ function Results() {
     confirm({
       title: "Publish " + roundName(round) + " scores?",
       description:
-        "This creates an immutable snapshot visible to players. Publishing again creates a new snapshot.",
+        round === "R1" ? "Publish the combined R1(a) + R1(b) standings for every team to participants and the audience. These final results cannot be changed after publication. This ranking is the source for R2 qualification; a tie across the 16th-place cutoff requires the competition's tie policy."
+        : "This creates an immutable snapshot visible to players. Publishing again creates a new snapshot.",
       action: () =>
         run(async () => {
           const p = await request("/api/admin/leaderboard/publish", {
@@ -1955,7 +1966,7 @@ function Results() {
             body: { round_code: round },
           });
           setPublication(p);
-          return "Leaderboard snapshot published.";
+          return p.already_published ? "Final Round 1 standings were already published; the original publication is unchanged." : "Leaderboard snapshot published.";
         }),
     });
   }
@@ -1978,6 +1989,23 @@ function Results() {
   }
   return (
     <>
+      <Panel title="Combined Round 1 standings" description="Final score = R1(a) score + R1(b) score. Preview becomes available after both subrounds officially end; only explicit publication makes these standings public.">
+        <DataState r={combined}>{b => <>
+          {!b.ready && !b.published ? <p className="empty">{b.blocked_reason === "COMBINED_RESULTS_PENDING" ? "Pending subround submissions must finish processing before preview and publication." : "Waiting for both R1(a) and R1(b) to end."}</p> : <>
+            <p className="help">{b.published ? `Immutable publication #${b.publication_id} · ${date(b.published_at)}` : "Admin preview · not yet published"} · All {b.total_teams} participating teams</p>
+            <Table columns={[
+              {key:"rank",label:"Rank"}, {key:"team_name",label:"Team Name"},
+              {key:"r1a_score",label:"R1(a) Score",render:r=>points(r.r1a_score)},
+              {key:"r1b_score",label:"R1(b) Score",render:r=>points(r.r1b_score)},
+              {key:"score",label:"Combined Total",render:r=>points(r.score)},
+            ]} rows={b.data || []}/>
+            {!!b.ties?.length && <p className="help">Equal totals share a rank. Team code orders the display within a tie. The competition tie-break policy is unresolved.</p>}
+            {b.qualification?.status === "BLOCKED_CUTOFF_TIE" && <Message error>R2 qualification is blocked: equal scores cross the 16-team cutoff. Apply the official competition tie policy before selecting qualifiers.</Message>}
+            {b.published && b.qualification?.status === "READY" && <p className="help">{b.qualification.team_ids.length} R2 qualifiers selected from this published combined ranking.</p>}
+          </>}
+          <div className="actions"><BusyButton label="Publish final combined R1" disabled={!b.ready || b.published} onClick={()=>publish("R1")}/></div>
+        </>}</DataState>
+      </Panel>
       <Panel
         title="Final results publication"
         description="End a round first, then publish one immutable final snapshot. Intermediate visibility follows that round’s captured rules."

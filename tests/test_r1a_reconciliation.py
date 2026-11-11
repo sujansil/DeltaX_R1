@@ -177,6 +177,7 @@ async def test_one_hundred_distinct_teams_submit_concurrently_with_decay():
 
 
 async def test_round_start_snapshots_enabled_teams_once():
+    from app.competition_rules import configured_rules
     require_disposable_test_database()
     from app.api import admin
     from app.db import SessionLocal
@@ -186,7 +187,7 @@ async def test_round_start_snapshots_enabled_teams_once():
         eligible = Team(code="ELIGIBLE", name="Eligible", login_username="eligible")
         disabled = Team(code="DISABLED", name="Disabled", login_username="disabled", enabled=False)
         db.add_all((eligible, disabled, Round(code="R1A")))
-        for position in range(1, 24):
+        for position in range(1, configured_rules().r1a.question_count + 1):
             q = Question(round_code="R1A", position=position, answer_type="MCQ")
             db.add(q); await db.flush()
             option = QuestionOption(question_id=q.id, position=1, option_text="correct")
@@ -219,7 +220,8 @@ async def test_concurrent_reconciliation_and_no_future_outcomes():
         assert positions == [1, 1]
 
 
-async def test_pause_does_not_expire_and_q23_background_pass_ends_at_deadline():
+async def test_pause_does_not_expire_and_final_question_background_pass_ends_at_deadline():
+    from app.competition_rules import configured_rules
     require_disposable_test_database()
     from app.db import SessionLocal
     from app.models import Round, Submission
@@ -233,7 +235,7 @@ async def test_pause_does_not_expire_and_q23_background_pass_ends_at_deadline():
         assert await db.scalar(select(func.count()).select_from(Submission)) == 1
 
     await reset_data()
-    await seed(position=23)
+    await seed(position=configured_rules().r1a.question_count)
     async with SessionLocal() as db:
         result = await reconcile_r1a(db)
         await db.commit()
@@ -290,13 +292,14 @@ async def test_restart_recovery_uses_persisted_deadline():
             Submission.result == "UNANSWERED")) == 1
 
 
-async def test_periodic_worker_finalizes_q23_without_request(monkeypatch):
+async def test_periodic_worker_finalizes_final_question_without_request(monkeypatch):
+    from app.competition_rules import configured_rules
     require_disposable_test_database()
     from app import main
     from app.db import SessionLocal
     from app.models import Round
     await reset_data()
-    await seed(position=23)
+    await seed(position=configured_rules().r1a.question_count)
     monkeypatch.setattr(main.settings, "r1a_reconciliation_interval_seconds", 0.01)
     stop = asyncio.Event()
     task = asyncio.create_task(main._r1a_reconciliation_loop(stop))

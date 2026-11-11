@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 
 from tests.db_guard import require_disposable_test_database
+from app.competition_rules import configured_rules
 
 
 pytestmark = [
@@ -16,7 +17,7 @@ pytestmark = [
     pytest.mark.skipif(os.getenv("RUN_DB_TESTS") != "1", reason="requires disposable PostgreSQL"),
 ]
 
-BUDGET_MS = 28 * 60 * 1000
+BUDGET_MS = configured_rules().r1b.total_answering_budget_ms
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
@@ -114,7 +115,7 @@ async def test_start_is_free_and_first_ready_starts_persisted_clock(monkeypatch)
     assert ready["clock_running"] is True
     assert ready["remaining_ms"] == BUDGET_MS
     assert ready["clock_started_at"] == clock[0]
-    assert ready["team_deadline"] == clock[0] + timedelta(minutes=28)
+    assert ready["team_deadline"] == clock[0] + timedelta(milliseconds=BUDGET_MS)
     question = await player_call(r1b.question, team_id)
     assert question["position"] == 1
 

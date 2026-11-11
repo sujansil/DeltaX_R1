@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     activation_lockout_minutes: int = 15
     max_upload_bytes: int = 5 * 1024 * 1024
     r1a_reconciliation_interval_seconds: float = 1.0
+    # All four settings AND a matching operator-provisioned database attestation
+    # are required. Development/production databases are never resettable.
+    r1_reset_enabled: bool = False
+    r1_reset_database_name: str = ""
+    r1_rehearsal_token: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 

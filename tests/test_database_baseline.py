@@ -29,7 +29,7 @@ async def test_migrations_match_orm_metadata():
         )
 
     assert "alembic_version" in table_names
-    assert current_revision == "0014_type_final_publications"
+    assert current_revision == "0016_rehearsal_reset_guard"
     assert set(Base.metadata.tables) <= set(table_names)
     assert differences == [], repr(differences)
 

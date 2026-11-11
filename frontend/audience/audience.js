@@ -17,10 +17,11 @@ function renderRows(board, animate){
  const target=$('leaderboard'),existing=new Map([...target.children].map(el=>[el.dataset.id,el]));
  const positions=new Map([...existing].map(([id,el])=>[id,el.getBoundingClientRect()]));
  if(animate)cancelMoves();
- const rows=(board?.data || []).slice(0,16),nodes=[];
+ const combined=board?.round_code==='R1'||board?.scope?.round_code==='R1';
+ const rows=combined?(board?.data || []):(board?.data || []).slice(0,16),nodes=[];
  for(const entry of rows){
   const id=String(entry.team_id),row=existing.get(id)||document.createElement('div');row.className='leader-row';row.dataset.id=id;
-  row.innerHTML=`<span class="rank">#${escape(entry.rank)}</span><span class="team-name" title="${escape(entry.team_name)}">${escape(entry.team_name)}</span><strong class="score">${escape(number(entry.score))}</strong>`;
+  row.innerHTML=`<span class="rank">#${escape(entry.rank)}</span><span class="team-name" title="${escape(entry.team_name)}">${escape(entry.team_name)}</span>${combined?`<span class="subscore">${escape(number(entry.r1a_score))}</span><span class="subscore">${escape(number(entry.r1b_score))}</span>`:''}<strong class="score">${escape(number(entry.score))}</strong>`;
   nodes.push(row);
  }
  if(nodes.length!==target.children.length||nodes.some((node,i)=>node!==target.children[i]))target.replaceChildren(...nodes);
@@ -38,7 +39,7 @@ function apply(data){
  snapshotAt=stamp;latest=data;received=performance.now();
  const oldSlide=lastSlide,key=JSON.stringify([data.view,data.round_code,data.question,data.answer]);
  document.body.dataset.view=data.view;
- $('round-label').textContent=data.round_code==='R1B'?'MATH RALLY · R1B':'RAPID FIRE · R1A';
+ $('round-label').textContent=data.round_code==='R1'?'ROUND ONE · FINAL':data.round_code==='R1B'?'MATH RALLY · R1B':'RAPID FIRE · R1A';
  $('phase-label').textContent=data.view.replaceAll('_',' ');$('paused').hidden=!data.paused;
  controls.current.reducedMotion=reduced.matches||data.paused;
  window.dispatchEvent(new Event('atrium:visual-mode'));
@@ -64,7 +65,11 @@ function apply(data){
  const copy={STANDBY:['A moment before the extraordinary.','Waiting for the next mathematical encounter.'],RELAY_STANDBY:['Four minds. One journey.','Math Rally is in progress. Pass the device. Keep the momentum.'],REVIEW_READY:['The journey, revisited.','Math Rally has ended. Waiting for the question review.'],THANK_YOU:['Beyond the final answer.','Thank you for being part of Delta X.'],CONTENT_UNAVAILABLE:['One moment.','Waiting for authorized question content.'],RESULTS_PENDING:['The final pattern is forming.','Waiting for the authorized standings to be published.'],LEADERBOARD:['The numbers tell a story.','Published standings.']};
  const [title,description]=copy[data.view]||copy.STANDBY;$('waiting-title').textContent=title;$('waiting-copy').textContent=description;
  const board=data.leaderboard,publication=board?.publication_id||null;
- $('publication').textContent=board?`${board.final?'Final publication':'After question '+board.after_question} · ${new Date(board.published_at).toLocaleTimeString()}`:'Standings have not yet been published.';
+ const combined=board?.round_code==='R1'||board?.scope?.round_code==='R1';
+ document.body.dataset.combined=String(combined);
+ $('board-title').textContent=combined?'Final Round 1 standings':'Where the numbers stand.';
+ $('board-columns').hidden=!combined;
+ $('publication').textContent=board?`${combined?'R1(a) + R1(b) · All '+board.data.length+' participating teams':board.final?'Final publication':'After question '+board.after_question} · ${new Date(board.published_at).toLocaleTimeString()}${combined&&board.ties?.length?' · Equal scores share a rank; competition tie policy unresolved.':''}${combined&&board.qualification?.status==='BLOCKED_CUTOFF_TIE'?' · R2 qualification pending the official cutoff tie policy.':''}`:'Standings have not yet been published.';
  renderRows(showBoard?board:null,lastPublication!==null&&publication!==lastPublication);lastPublication=publication;
  if(key!==oldSlide){cancelMoves();stageMove?.cancel();if(!reduced.matches&&oldSlide){const stage=q?$('question'):$('waiting');stageMove=stage.animate([{transform:'translateY(9px)'},{transform:'none'}],{duration:550,easing:'ease-out'});}lastSlide=key;}
  drawClock();

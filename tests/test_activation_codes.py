@@ -178,14 +178,17 @@ async def test_activated_team_and_existing_device_are_unchanged():
 async def test_admin_create_regenerate_and_team_activate_end_to_end():
     require_disposable_test_database()
     from app.db import SessionLocal
-    from app.models import Admin
+    from app.models import Admin, Team
     from app.security import create_token, hash_password_async
     async with SessionLocal() as db:
+        # Keep this scenario repeatable when the guarded disposable suite runs
+        # more than once; remove only the account owned by this test.
+        await db.execute(delete(Team).where(Team.login_username == "activation-flow"))
         admin = await db.scalar(select(Admin).where(Admin.username == "activation-flow-admin"))
         if not admin:
             db.add(Admin(username="activation-flow-admin",
                          password_hash=await hash_password_async("admin-pass")))
-            await db.commit()
+        await db.commit()
     headers = {"Authorization": "Bearer " + create_token("activation-flow-admin", "admin")}
     app = __import__("app.main", fromlist=["app"]).app
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

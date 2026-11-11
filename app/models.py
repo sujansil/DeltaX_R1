@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
-from sqlalchemy import String, Boolean, Integer, BigInteger, DateTime, ForeignKey, Text, Numeric, UniqueConstraint, Index, CheckConstraint
+from sqlalchemy import String, Boolean, Integer, BigInteger, DateTime, ForeignKey, Text, Numeric, UniqueConstraint, Index, CheckConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 from .competition_rules import configured_rules
@@ -280,6 +280,23 @@ class LeaderboardSnapshot(Base):
     round_code: Mapped[str] = mapped_column(String(8), index=True)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     data_json: Mapped[str] = mapped_column(Text)
+    __table_args__ = (
+        Index("uq_combined_r1_publication", "round_code", unique=True,
+              postgresql_where=text("round_code = 'R1'")),
+    )
+
+
+class RehearsalAuthorization(Base):
+    """Explicit operator authorization; migrations never create an authorization."""
+    __tablename__ = "round1_rehearsal_authorization"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    database_name: Mapped[str] = mapped_column(String(128))
+    database_oid: Mapped[int] = mapped_column(BigInteger)
+    token_sha256: Mapped[str] = mapped_column(String(64))
+    authorized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_rehearsal_authorization_singleton"),
+    )
 
 class AdminAction(Base):
     __tablename__ = "admin_actions"

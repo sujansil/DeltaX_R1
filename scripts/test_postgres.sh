@@ -24,6 +24,6 @@ export ENVIRONMENT="test"
 export RUN_DB_TESTS="1"
 export ROUND1_TEST_DATABASE_GUARD="round1-disposable-postgres"
 
-.venv/bin/alembic upgrade head
-.venv/bin/pytest
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python -m pytest
 

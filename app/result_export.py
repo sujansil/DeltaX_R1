@@ -131,6 +131,26 @@ async def build_results_workbook(db: AsyncSession, scope: str) -> tuple[bytes, d
                  item.get("rank"), item.get("team_id"), item.get("team_code"),
                  item.get("team_name"), item.get("score")], text_columns=(2, 5, 6))
 
+    # Keep individual subround exports unchanged. The combined sheet reads only
+    # the immutable publication, never the current ledger or current team names.
+    if scope == "BOTH":
+        from .combined_leaderboard import read_combined
+        final = await read_combined(db)
+        if final["published"]:
+            combined = _sheet(wb, "Final Combined R1", [
+                "Rank", "Team Name", "R1(a) Score", "R1(b) Score", "Combined Total",
+                "Team ID", "Team Code", "R2 Qualifier", "Qualification Status",
+                "Publication ID", "Published At (UTC)", "Tie Policy",
+            ])
+            qualification = final["qualification"]
+            qualifiers = set(qualification["team_ids"])
+            for item in final["data"]:
+                selected = ("YES" if item["team_id"] in qualifiers else "NO") if qualification["status"] == "READY" else "PENDING"
+                _row(combined, [item["rank"], item["team_name"], item["r1a_score"],
+                     item["r1b_score"], item["score"], item["team_id"], item["team_code"],
+                     selected, qualification["status"], final["publication_id"],
+                     final["published_at"], final["tie_policy"]], text_columns=(1, 6, 7, 8, 11))
+
     audit = _sheet(wb, "Admin Audit", [
         "Audit ID", "Timestamp", "Admin ID", "Admin Username", "Action", "Target / Details",
     ])

@@ -59,6 +59,8 @@ async def get_bootstrap(token):
 
 
 async def seed_r1a(status, *, age_seconds=0, accepted=False, ended_at=None):
+    from dataclasses import replace
+    from app.competition_rules import configured_rules
     from app.db import SessionLocal
     from app.models import Question, QuestionOption, Round, RoundEnrollment, Submission
     from app.timing import utc_now
@@ -69,7 +71,13 @@ async def seed_r1a(status, *, age_seconds=0, accepted=False, ended_at=None):
         db.add(q); await db.flush()
         option = QuestionOption(question_id=q.id, position=1, option_text="Visible choice")
         db.add(option); await db.flush(); q.correct_option_id = option.id
+        # These lifecycle/reveal scenarios explicitly exercise the manual,
+        # per-question-results policy regardless of the operator's TOML file.
+        rules = configured_rules()
+        rules = replace(rules, r1a=replace(rules.r1a, advance_mode="MANUAL",
+                                           show_results_after_each_question=True))
         db.add(Round(code="R1A", status=status,
+                     rules_version=rules.version, rules_snapshot=rules.snapshot_json(),
                      started_at=started if status != "DRAFT" else None,
                      current_position=1 if status != "DRAFT" else None,
                      question_started_at=started if status != "DRAFT" else None,
@@ -85,6 +93,7 @@ async def seed_r1a(status, *, age_seconds=0, accepted=False, ended_at=None):
 
 
 async def test_r1a_bootstrap_lifecycle_and_lost_submit_response():
+    from app.competition_rules import configured_rules
     require_disposable_test_database()
     cases = [
         ("DRAFT", 0, False, "NOT_STARTED"),
@@ -100,7 +109,7 @@ async def test_r1a_bootstrap_lifecycle_and_lost_submit_response():
         assert response.status_code == 200, response.text
         data = response.json()
         assert data["contract_version"] == "1"
-        assert data["rules"]["r1a"]["question_count"] == 23
+        assert data["rules"]["r1a"]["question_count"] == configured_rules().r1a.question_count
         assert "correct_option_id" not in data["rules"]["r1a"]
         assert data["player_state"]["screen"] == screen
         assert data["identity"]["team_name"] == "Bootstrap Team"
