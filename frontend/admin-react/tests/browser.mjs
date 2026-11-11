@@ -282,6 +282,14 @@ async function routes(page) {
     if (p.match(/^\/api\/admin\/teams\/\d+$/)) {
       const t = teams.find((t) => t.id === Number(p.split("/").at(-1)));
       if (method === "PUT") Object.assign(t, body);
+      if (method === "DELETE") {
+        assert.equal(body.confirmation, t.name);
+        assert(body.reason.trim());
+        if (t.submission_count || t.active_session_count)
+          return send({detail:{code:"TEAM_HAS_COMPETITION_HISTORY",message:"Team has competition history and cannot be deleted"}},409);
+        teams = teams.filter((team) => team.id !== t.id);
+        return send({deleted:true,team_id:t.id});
+      }
       return send(t);
     }
     if (p.endsWith("/password-reset"))
@@ -478,6 +486,24 @@ try {
   await page.getByRole("status").filter({ hasText: "Team saved" }).waitFor();
   assert.equal(teams[0].name, "Updated Ninjas");
   checks++;
+  const deletionButton = page.getByRole("button", {name:"Delete Team",exact:true});
+  assert(await deletionButton.isDisabled());
+  await page.getByLabel("Deletion reason", {exact:true}).fill("Duplicate registration");
+  await page.getByLabel("Type the exact team name: Updated Ninjas", {exact:true}).fill("updated ninjas");
+  assert(await deletionButton.isDisabled());
+  await page.getByLabel("Type the exact team name: Updated Ninjas", {exact:true}).fill("Updated Ninjas ");
+  assert(await deletionButton.isDisabled());
+  await page.getByLabel("Type the exact team name: Updated Ninjas", {exact:true}).fill("Updated Ninjas");
+  await deletionButton.click();
+  assert.equal(calls.filter(c=>c.method==="DELETE"&&c.p.startsWith("/api/admin/teams/")).length,0);
+  await page.getByRole("dialog").getByRole("button",{name:"Cancel",exact:true}).click();
+  assert.equal(calls.filter(c=>c.method==="DELETE"&&c.p.startsWith("/api/admin/teams/")).length,0);
+  await deletionButton.click();
+  await page.getByRole("dialog").getByRole("button",{name:"Confirm",exact:true}).click();
+  await page.getByRole("dialog").getByRole("alert").filter({hasText:"Team has competition history"}).waitFor();
+  assert.equal(teams.length,1);
+  await page.getByRole("dialog").getByRole("button",{name:"Cancel",exact:true}).click();
+  checks++;
   await page
     .getByLabel("New team password", { exact: true })
     .fill("new-fixture-password");
@@ -510,6 +536,22 @@ try {
     .waitFor();
   assert.equal(sessions[0].active, false);
   assert.equal(sessions[0].revocation_reason, "Phone replacement");
+  checks++;
+  await page.getByRole("button", {name:"Teams",exact:true}).click();
+  await page.getByRole("button", {name:"Create team",exact:true}).click();
+  const creation = page.locator(".panel").filter({has:page.getByRole("heading",{name:"Create a team",exact:true})});
+  await creation.getByLabel("Team code",{exact:true}).fill("UNUSED");
+  await creation.getByLabel("Team name",{exact:true}).fill("Unused Browser Team");
+  await creation.getByLabel("Login username",{exact:true}).fill("unused-browser");
+  await creation.getByRole("button",{name:"Create team",exact:true}).click();
+  await page.getByLabel("Type the exact team name: Unused Browser Team",{exact:true}).fill("Unused Browser Team");
+  await page.getByLabel("Deletion reason",{exact:true}).fill("Unused test registration");
+  await page.getByRole("button",{name:"Delete Team",exact:true}).click();
+  await page.getByRole("dialog").getByRole("button",{name:"Confirm",exact:true}).click();
+  await page.getByRole("status").filter({hasText:"Unused team deleted"}).waitFor();
+  assert.equal(teams.length,1);
+  assert.equal(teams[0].id,7);
+  assert.equal(await page.getByRole("heading",{name:"Team #8",exact:true}).count(),0);
   checks++;
   await page.getByRole("button", { name: "Submissions", exact: true }).click();
   await page

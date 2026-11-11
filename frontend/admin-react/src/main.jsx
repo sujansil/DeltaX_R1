@@ -1305,7 +1305,40 @@ function Questions() {
     </>
   );
 }
-function TeamDetail({ id, onClose, onSessions, onActivation }) {
+function TeamDeletion({ team, onDeleted }) {
+  const { run, request, confirm, busy } = useApp();
+  const [name, setName] = useState("");
+  const [reason, setReason] = useState("");
+  return (
+    <form className="password-reset" onSubmit={(e) => {
+      e.preventDefault();
+      if (name !== team.name || !reason.trim()) return;
+      confirm({
+        title: `Delete ${team.name}?`,
+        description: "Permanently remove this unused team and its credentials. The server will reject deletion if sessions, competition history or published results exist. The team identity and reason remain in the audit log.",
+        danger: true,
+        action: () => run(async () => {
+          await request(`/api/admin/teams/${team.id}`, {
+            method: "DELETE", body: { confirmation: name, reason: reason.trim() },
+          });
+          onDeleted(team.id);
+          return "Unused team deleted; identity and reason retained in the audit log.";
+        }),
+      });
+    }}>
+      <h3>Delete unused team</h3>
+      <p className="help">Only teams that have never participated can be deleted. Revoke any sessions first. A recorded reset may prevent verification of older history.</p>
+      <Field label={`Type the exact team name: ${team.name}`}>
+        <input name="delete_confirmation" value={name} onChange={(e) => setName(e.target.value)} required maxLength={120} autoComplete="off" disabled={busy} />
+      </Field>
+      <Field label="Deletion reason" hint="Saved with the team identity in the audit log.">
+        <input name="delete_reason" value={reason} onChange={(e) => setReason(e.target.value)} required maxLength={500} disabled={busy} />
+      </Field>
+      <BusyButton type="submit" kind="danger" label="Delete Team" disabled={name !== team.name || !reason.trim()} />
+    </form>
+  );
+}
+function TeamDetail({ id, onClose, onSessions, onActivation, onDeleted }) {
   const { run, request, confirm } = useApp(),
     r = useData("/api/admin/teams/" + id),
     dashboard = useData("/api/admin/dashboard");
@@ -1455,6 +1488,7 @@ function TeamDetail({ id, onClose, onSessions, onActivation }) {
                 <BusyButton label="Regenerate activation code" type="submit" />
               </form>
             )}
+            <TeamDeletion team={t} onDeleted={onDeleted} />
           </>
         )}
       </DataState>
@@ -1616,6 +1650,11 @@ function Teams() {
           onClose={() => setSelected(null)}
           onSessions={(id) => go("sessions", id)}
           onActivation={setActivation}
+          onDeleted={(id) => {
+            setSelected(null);
+            setActivation((current) => current?.id === id || current?.team_id === id ? null : current);
+            setOffset(0);
+          }}
         />
       )}
     </>

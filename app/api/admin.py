@@ -24,6 +24,7 @@ from ..round_validation import validate_round_configuration
 from ..result_export import build_results_workbook
 from ..competition_rules import configured_rules, round_rules
 from ..rehearsal_safety import reset_authorization, reset_control
+from ..team_deletion import lock_unused_team
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 settings = get_settings()
@@ -39,6 +40,10 @@ class TeamUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     username: str | None = Field(default=None, min_length=1, max_length=120)
     enabled: bool | None = None
+
+class TeamDeleteIn(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=500)
 
 class PasswordResetIn(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
@@ -534,6 +539,29 @@ async def get_team(team_id: int, user=Depends(require_admin), db: AsyncSession=D
             "username": team.login_username, "enabled": team.enabled,
             "created_at": team.created_at, "enrolled_rounds": enrolled,
             "has_password": team.password_hash is not None}
+
+
+@router.delete("/teams/{team_id}")
+async def delete_team(team_id: int, data: TeamDeleteIn,
+                      user=Depends(require_admin), db: AsyncSession=Depends(get_db)):
+    reason = data.reason.strip()
+    if not reason:
+        raise admin_error(422, "TEAM_DELETE_REASON_REQUIRED", "An audited deletion reason is required")
+    async with db.begin():
+        # Check persisted admin status as well as the JWT role for this permanent action.
+        actor = await db.scalar(select(Admin).where(
+            Admin.username == user.get("sub"), Admin.enabled.is_(True)))
+        if actor is None:
+            raise admin_error(403, "ADMIN_REQUIRED", "An enabled admin account is required")
+        team = await lock_unused_team(db, team_id, data.confirmation)
+        identity = {"team_id": team.id, "team_code": team.code, "team_name": team.name,
+                    "login_username": team.login_username, "created_at": team.created_at.isoformat()}
+        # Existing FKs cascade only unused session rows; all competition records
+        # above are blockers. AdminAction has no FK to Team and survives deletion.
+        await db.delete(team)
+        await audit(db, user, "DELETE_TEAM", json.dumps(
+            {**identity, "reason": reason}, sort_keys=True, separators=(",", ":")))
+    return {"deleted": True, "team_id": team_id}
 
 
 @router.post("/teams/{team_id}/activation/regenerate")
